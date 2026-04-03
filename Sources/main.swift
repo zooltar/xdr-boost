@@ -33,6 +33,8 @@ class Renderer: NSObject, MTKViewDelegate {
     }
 }
 
+typealias XDRScreenInfo = (screen: NSScreen, id: NSNumber, maxEDR: CGFloat)
+
 class XDRApp: NSObject, NSApplicationDelegate {
     var statusItem: NSStatusItem!
     var overlayWindows: [NSNumber: NSWindow] = [:]
@@ -45,6 +47,8 @@ class XDRApp: NSObject, NSApplicationDelegate {
     var maxEDR: CGFloat = 1.0
     var hotkeyRef: EventHotKeyRef?
     var watchdogTimer: Timer?
+    var displayRefreshWorkItem: DispatchWorkItem?
+    var activeDisplaySignature: String?
 
     var toggleItem: NSMenuItem!
     var shortcutItem: NSMenuItem!
@@ -94,6 +98,127 @@ class XDRApp: NSObject, NSApplicationDelegate {
 
     func globalMaxEDR() -> CGFloat {
         xdrScreens().map(\.maxEDR).max() ?? 1.0
+    }
+
+    func displaySignature(for screens: [XDRScreenInfo]) -> String {
+        screens
+            .sorted { $0.id.intValue < $1.id.intValue }
+            .map { screen in
+                let frame = screen.screen.frame.integral
+                return [
+                    String(screen.id.intValue),
+                    String(format: "%.0f", frame.origin.x),
+                    String(format: "%.0f", frame.origin.y),
+                    String(format: "%.0f", frame.size.width),
+                    String(format: "%.0f", frame.size.height),
+                    String(format: "%.2f", screen.maxEDR),
+                ].joined(separator: ":")
+            }
+            .joined(separator: "|")
+    }
+
+    func setActiveUI(_ active: Bool) {
+        isActive = active
+        statusItem.button?.title = active ? "☀︎" : "☀"
+        toggleItem.title = active ? "Turn Off" : "Turn On"
+    }
+
+    func makeOverlay(for xdrScreen: XDRScreenInfo) -> (window: NSWindow, view: MTKView, renderer: Renderer) {
+        let frame = xdrScreen.screen.frame
+        let window = NSWindow(contentRect: frame, styleMask: .borderless, backing: .buffered, defer: false)
+        window.level = .screenSaver
+        window.backgroundColor = .clear
+        window.isOpaque = false
+        window.hasShadow = false
+        window.ignoresMouseEvents = true
+        window.hidesOnDeactivate = false
+        window.sharingType = .none
+        window.collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary]
+
+        let boostView = MTKView(frame: frame, device: device)
+        boostView.colorPixelFormat = .rgba16Float
+        boostView.colorspace = CGColorSpace(name: CGColorSpace.extendedLinearDisplayP3)
+        boostView.layer?.isOpaque = false
+        boostView.preferredFramesPerSecond = 10
+        let levelForScreen = min(boostLevel, Double(xdrScreen.maxEDR))
+        boostView.clearColor = MTLClearColor(red: levelForScreen, green: levelForScreen, blue: levelForScreen, alpha: 1.0)
+        if let layer = boostView.layer as? CAMetalLayer {
+            layer.wantsExtendedDynamicRangeContent = true
+        }
+        let renderer = Renderer(device: device)
+        boostView.delegate = renderer
+        boostView.wantsLayer = true
+
+        window.contentView = boostView
+        window.contentView?.layer?.compositingFilter = "multiply"
+        return (window, boostView, renderer)
+    }
+
+    func installOverlays(for screens: [XDRScreenInfo], logMessage: String?) {
+        let oldWindows = overlayWindows
+        var newWindows: [NSNumber: NSWindow] = [:]
+        var newViews: [NSNumber: MTKView] = [:]
+        var newRenderers: [NSNumber: Renderer] = [:]
+
+        for xdrScreen in screens {
+            let overlay = makeOverlay(for: xdrScreen)
+            overlay.window.orderFrontRegardless()
+            newWindows[xdrScreen.id] = overlay.window
+            newViews[xdrScreen.id] = overlay.view
+            newRenderers[xdrScreen.id] = overlay.renderer
+        }
+
+        overlayWindows = newWindows
+        boostViews = newViews
+        boostRenderers = newRenderers
+        activeDisplaySignature = displaySignature(for: screens)
+        setActiveUI(true)
+        oldWindows.values.forEach { $0.orderOut(nil) }
+
+        if let logMessage {
+            fputs(logMessage, stderr)
+        }
+    }
+
+    func scheduleDisplayRefresh() {
+        displayRefreshWorkItem?.cancel()
+
+        let workItem = DispatchWorkItem { [weak self] in
+            self?.refreshDisplaysIfNeeded(reason: "Display changed — XDR refreshed\n")
+        }
+
+        displayRefreshWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.75, execute: workItem)
+    }
+
+    func refreshDisplaysIfNeeded(reason: String? = nil, force: Bool = false) {
+        maxEDR = globalMaxEDR()
+        let screens = xdrScreens()
+
+        guard shouldBeActive else { return }
+
+        guard !screens.isEmpty else {
+            if isActive {
+                deactivate(logMessage: "XDR OFF — no XDR display available\n")
+            }
+            return
+        }
+
+        let expectedDisplayIDs = Set(screens.map(\.id))
+        let activeDisplayIDs = Set(overlayWindows.keys)
+        let missingOverlay = overlayWindows.values.contains { !$0.isVisible }
+        let currentSignature = displaySignature(for: screens)
+        let configChanged = activeDisplaySignature != currentSignature
+
+        if force || !isActive || missingOverlay || expectedDisplayIDs != activeDisplayIDs || configChanged {
+            let message: String?
+            if !isActive {
+                message = "XDR ON — \(boostLevel)x on \(screens.count) display(s)\n"
+            } else {
+                message = reason
+            }
+            installOverlays(for: screens, logMessage: message)
+        }
     }
 
     func registerGlobalHotkey() {
@@ -196,21 +321,16 @@ class XDRApp: NSObject, NSApplicationDelegate {
         watchdogTimer = Timer.scheduledTimer(withTimeInterval: 3.0, repeats: true) { [weak self] _ in
             guard let self = self else { return }
             if self.shouldBeActive && !self.isActive {
-                self.maxEDR = self.globalMaxEDR()
-                if self.maxEDR > 1.0 {
-                    self.activate()
-                    fputs("Watchdog — XDR restored\n", stderr)
-                }
+                self.refreshDisplaysIfNeeded(reason: "Watchdog — XDR restored\n", force: true)
             } else if self.shouldBeActive && self.isActive {
                 let screens = self.xdrScreens()
                 let expectedDisplayIDs = Set(screens.map(\.id))
                 let activeDisplayIDs = Set(self.overlayWindows.keys)
                 let missingOverlay = self.overlayWindows.values.contains { !$0.isVisible }
+                let configChanged = self.activeDisplaySignature != self.displaySignature(for: screens)
 
-                if missingOverlay || expectedDisplayIDs != activeDisplayIDs {
-                    self.isActive = false
-                    self.activate()
-                    fputs("Watchdog — overlay recreated\n", stderr)
+                if missingOverlay || expectedDisplayIDs != activeDisplayIDs || configChanged {
+                    self.refreshDisplaysIfNeeded(reason: "Watchdog — overlay recreated\n", force: true)
                 }
             }
         }
@@ -218,14 +338,17 @@ class XDRApp: NSObject, NSApplicationDelegate {
 
     @objc func handleDisplayChange() {
         maxEDR = globalMaxEDR()
-        if isActive {
-            deactivate()
-            if maxEDR > 1.0 && shouldBeActive {
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
-                    self?.activate()
-                    fputs("Display changed — XDR refreshed\n", stderr)
-                }
-            }
+        guard shouldBeActive else { return }
+
+        let screens = xdrScreens()
+        if screens.isEmpty {
+            scheduleDisplayRefresh()
+            return
+        }
+
+        let signature = displaySignature(for: screens)
+        if !isActive || activeDisplaySignature != signature {
+            scheduleDisplayRefresh()
         }
     }
 
@@ -234,7 +357,7 @@ class XDRApp: NSObject, NSApplicationDelegate {
     @objc func toggleXDR() {
         if isActive {
             shouldBeActive = false
-            deactivate()
+            deactivate(logMessage: "XDR OFF\n")
         } else {
             shouldBeActive = true
             activate()
@@ -259,68 +382,28 @@ class XDRApp: NSObject, NSApplicationDelegate {
     // MARK: - XDR Overlay
 
     func activate() {
-        deactivate()
         let screens = xdrScreens()
         guard !screens.isEmpty else {
             fputs("No connected display supports XDR\n", stderr)
             return
         }
 
-        for xdrScreen in screens {
-            let frame = xdrScreen.screen.frame
-            let window = NSWindow(contentRect: frame, styleMask: .borderless, backing: .buffered, defer: false)
-            window.level = .screenSaver
-            window.backgroundColor = .clear
-            window.isOpaque = false
-            window.hasShadow = false
-            window.ignoresMouseEvents = true
-            window.hidesOnDeactivate = false
-            window.sharingType = .none  // exclude from screenshots and screen recordings
-            window.collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary]
-
-            // Single MTKView that both triggers EDR and provides the boost
-            let boostView = MTKView(frame: frame, device: device)
-            boostView.colorPixelFormat = .rgba16Float
-            boostView.colorspace = CGColorSpace(name: CGColorSpace.extendedLinearDisplayP3)
-            boostView.layer?.isOpaque = false
-            boostView.preferredFramesPerSecond = 10
-            let levelForScreen = min(boostLevel, Double(xdrScreen.maxEDR))
-            boostView.clearColor = MTLClearColor(red: levelForScreen, green: levelForScreen, blue: levelForScreen, alpha: 1.0)
-            if let layer = boostView.layer as? CAMetalLayer {
-                layer.wantsExtendedDynamicRangeContent = true
-            }
-            let renderer = Renderer(device: device)
-            boostView.delegate = renderer
-
-            // Multiply compositing on the content view layer — composites with
-            // the desktop content BEHIND the window, not within it
-            boostView.wantsLayer = true
-            window.contentView = boostView
-            window.contentView?.layer?.compositingFilter = "multiply"
-            window.orderFrontRegardless()
-            overlayWindows[xdrScreen.id] = window
-            boostViews[xdrScreen.id] = boostView
-            boostRenderers[xdrScreen.id] = renderer
-        }
-
-        isActive = true
-        statusItem.button?.title = "☀︎"
-        toggleItem.title = "Turn Off"
-        fputs("XDR ON — \(boostLevel)x on \(screens.count) display(s)\n", stderr)
+        installOverlays(for: screens, logMessage: "XDR ON — \(boostLevel)x on \(screens.count) display(s)\n")
     }
 
-    func deactivate() {
+    func deactivate(logMessage: String? = nil) {
+        displayRefreshWorkItem?.cancel()
+        displayRefreshWorkItem = nil
         overlayWindows.values.forEach { $0.orderOut(nil) }
         overlayWindows.removeAll()
         boostViews.removeAll()
         boostRenderers.removeAll()
+        activeDisplaySignature = nil
 
         let wasActive = isActive
-        isActive = false
-        statusItem.button?.title = "☀"
-        toggleItem.title = "Turn On"
-        if wasActive {
-            fputs("XDR OFF\n", stderr)
+        setActiveUI(false)
+        if wasActive, let logMessage {
+            fputs(logMessage, stderr)
         }
     }
 
@@ -340,7 +423,7 @@ class XDRApp: NSObject, NSApplicationDelegate {
     }
 
     @objc func quit() {
-        deactivate()
+        deactivate(logMessage: "XDR OFF\n")
         NSApp.terminate(nil)
     }
 }

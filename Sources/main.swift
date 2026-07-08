@@ -50,6 +50,10 @@ class XDRApp: NSObject, NSApplicationDelegate {
     var displayRefreshWorkItem: DispatchWorkItem?
     var activeDisplaySignature: String?
 
+    var screenshotMonitor: Any?
+    var suppressedForScreenshot = false
+    var screenshotRestoreTimer: Timer?
+
     var toggleItem: NSMenuItem!
     var shortcutItem: NSMenuItem!
     var loginItem: NSMenuItem!
@@ -76,6 +80,7 @@ class XDRApp: NSObject, NSApplicationDelegate {
         setupStatusBar()
         registerGlobalHotkey()
         observeSleepWake()
+        observeScreenshots()
         fputs("XDR Boost ready — click menu bar icon or press Ctrl+Option+Cmd+V to toggle\n", stderr)
         fputs("Emergency kill: run `xdr-boost --kill` or press Ctrl+Option+Cmd+V\n", stderr)
         fputs("Max EDR: \(maxEDR)x\n", stderr)
@@ -132,7 +137,8 @@ class XDRApp: NSObject, NSApplicationDelegate {
         window.hasShadow = false
         window.ignoresMouseEvents = true
         window.hidesOnDeactivate = false
-        window.sharingType = .none
+        // Do not exclude this window from captures: the multiply filter would
+        // composite against an excluded black window and black out the result.
         window.collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary]
 
         let boostView = MTKView(frame: frame, device: device)
@@ -319,7 +325,7 @@ class XDRApp: NSObject, NSApplicationDelegate {
         // Watchdog: every 3 seconds, check if XDR should be on but overlay is dead
         // This handles sleep/wake, lid close/open, lock/unlock — all of them
         watchdogTimer = Timer.scheduledTimer(withTimeInterval: 3.0, repeats: true) { [weak self] _ in
-            guard let self = self else { return }
+            guard let self = self, !self.suppressedForScreenshot else { return }
             if self.shouldBeActive && !self.isActive {
                 self.refreshDisplaysIfNeeded(reason: "Watchdog — XDR restored\n", force: true)
             } else if self.shouldBeActive && self.isActive {
@@ -352,6 +358,96 @@ class XDRApp: NSObject, NSApplicationDelegate {
         }
     }
 
+    // MARK: - Screenshot suppression
+    //
+    // The overlay uses a `multiply` compositing filter, which can't be excluded
+    // from screen capture without turning the shot black (see activate()). So to
+    // keep screenshots looking normal we briefly hide the overlay while a capture
+    // is in progress, then restore it.
+    //
+    // Detection: a non-consuming global key monitor watches for the system
+    // screenshot shortcuts (⌘⇧3/4/5/6). Requires Input Monitoring permission.
+
+    func observeScreenshots() {
+        // keyCodes: 3 = 20, 4 = 21, 5 = 23, 6 = 22
+        let shotKeys: Set<UInt16> = [20, 21, 23, 22]
+        screenshotMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard let self = self else { return }
+            let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+            if flags == [.command, .shift] && shotKeys.contains(event.keyCode) {
+                self.suppressForScreenshot()
+            }
+        }
+        if screenshotMonitor == nil {
+            fputs("Could not install screenshot monitor (grant Input Monitoring permission)\n", stderr)
+        }
+    }
+
+    func suppressForScreenshot() {
+        guard isActive, !overlayWindows.isEmpty, !suppressedForScreenshot else { return }
+        suppressedForScreenshot = true
+        overlayWindows.values.forEach { $0.orderOut(nil) }
+        fputs("Screenshot detected — overlay hidden\n", stderr)
+        scheduleScreenshotRestore()
+    }
+
+    // Matches the interactive screenshot UI process. The bundle id has moved
+    // around between macOS versions (e.g. Tahoe), so fall back to the bundle/
+    // executable path — otherwise a renamed id breaks detection and the overlay
+    // gets restored mid-capture (which is what corrupts ⌘⇧4-Space window shots).
+    func isCaptureUI(_ app: NSRunningApplication) -> Bool {
+        if let id = app.bundleIdentifier,
+           id == "com.apple.screencaptureui" || id == "com.apple.screenshot" {
+            return true
+        }
+        let path = (app.bundleURL ?? app.executableURL)?.path.lowercased() ?? ""
+        return path.contains("screencaptureui") || path.contains("screenshot")
+    }
+
+    func captureUIIsRunning() -> Bool {
+        NSWorkspace.shared.runningApplications.contains { isCaptureUI($0) }
+    }
+
+    func scheduleScreenshotRestore() {
+        screenshotRestoreTimer?.invalidate()
+        var ticks = 0
+        var sawCaptureUI = false
+        // Keep the overlay hidden for the WHOLE capture session. Interactive
+        // captures (⌘⇧4 region, ⌘⇧4-Space window pick, ⌘⇧5 panel) spawn the
+        // capture UI — wait until we've seen it appear AND go away, so a slow
+        // window pick can't trigger an early restore. Instant captures (⌘⇧3/6)
+        // never spawn a UI, so a ticks>=3 (~1.2s) grace covers them. The grace
+        // also absorbs the brief lag before the UI first shows up. Hard cap
+        // (~30s) guarantees the overlay always returns.
+        screenshotRestoreTimer = Timer.scheduledTimer(withTimeInterval: 0.4, repeats: true) { [weak self] timer in
+            guard let self = self else { timer.invalidate(); return }
+            ticks += 1
+            if self.captureUIIsRunning() {
+                sawCaptureUI = true
+                return  // stay hidden while the capture UI is up
+            }
+            let interactiveDone = sawCaptureUI
+            let instantDone = !sawCaptureUI && ticks >= 3
+            if interactiveDone || instantDone || ticks > 75 {
+                timer.invalidate()
+                self.screenshotRestoreTimer = nil
+                self.restoreAfterScreenshot()
+            }
+        }
+    }
+
+    func restoreAfterScreenshot() {
+        guard suppressedForScreenshot else { return }
+        suppressedForScreenshot = false
+        guard shouldBeActive else { return }
+        if !overlayWindows.isEmpty {
+            overlayWindows.values.forEach { $0.orderFrontRegardless() }
+        } else {
+            activate()
+        }
+        fputs("Screenshot done — overlay restored\n", stderr)
+    }
+
     // MARK: - Toggle
 
     @objc func toggleXDR() {
@@ -375,7 +471,11 @@ class XDRApp: NSObject, NSApplicationDelegate {
                 let screenMaxEDR = maxEDRByScreen[screenID] ?? Double(maxEDR)
                 let levelForScreen = min(boostLevel, screenMaxEDR)
                 view.clearColor = MTLClearColor(red: levelForScreen, green: levelForScreen, blue: levelForScreen, alpha: 1.0)
+                view.draw()
             }
+        } else {
+            shouldBeActive = true
+            activate()
         }
     }
 

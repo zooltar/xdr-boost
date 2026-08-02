@@ -2,6 +2,7 @@ import Foundation
 
 final class BoostLevelSettings {
     static let minimumLevel = 1.0
+    static let maximumLevel = 4.0
     static let step = 0.1
     static let defaultLevel = 2.0
 
@@ -36,11 +37,25 @@ final class BoostLevelSettings {
 
     static func normalized(_ level: Double, maximum: Double) -> Double {
         let maximumLevel = maximumSelectableLevel(for: maximum)
+        return normalized(level, cappedAt: maximumLevel)
+    }
+
+    static func normalizedForHardware(_ level: Double, maximum: Double) -> Double {
+        let maximumLevel = steppedMaximumLevel(for: maximum)
+        return normalized(level, cappedAt: maximumLevel)
+    }
+
+    private static func normalized(_ level: Double, cappedAt maximumLevel: Double) -> Double {
         let roundedLevel = (level / step).rounded() * step
         return min(max(roundedLevel, minimumLevel), maximumLevel)
     }
 
     static func maximumSelectableLevel(for maximum: Double) -> Double {
+        let cappedMaximum = min(maximum, maximumLevel)
+        return steppedMaximumLevel(for: cappedMaximum)
+    }
+
+    private static func steppedMaximumLevel(for maximum: Double) -> Double {
         let steppedMaximum = floor((maximum + 0.000_001) / step) * step
         return max(minimumLevel, steppedMaximum)
     }

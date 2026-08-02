@@ -4,6 +4,8 @@ import Foundation
 enum BoostLevelSettingsTests {
     static func main() {
         testNormalizationUsesTenthsAndDisplayMaximum()
+        testNormalizationNeverExceedsApplicationMaximum()
+        testHardwareNormalizationDoesNotUseApplicationMaximum()
         testLevelsAreStoredIndependentlyByDisplay()
         testFallbackIsUsedForUnknownDisplay()
         print("BoostLevelSettingsTests passed")
@@ -14,6 +16,17 @@ enum BoostLevelSettingsTests {
         assertEqual(BoostLevelSettings.normalized(1.05, maximum: 4.0), 1.1)
         assertEqual(BoostLevelSettings.normalized(9.0, maximum: 3.96), 3.9)
         assertEqual(BoostLevelSettings.normalized(0.5, maximum: 4.0), 1.0)
+    }
+
+    private static func testNormalizationNeverExceedsApplicationMaximum() {
+        assertEqual(BoostLevelSettings.normalized(16.0, maximum: 16.0), 4.0)
+        assertEqual(BoostLevelSettings.maximumSelectableLevel(for: 16.0), 4.0)
+    }
+
+    private static func testHardwareNormalizationDoesNotUseApplicationMaximum() {
+        assertEqual(BoostLevelSettings.normalizedForHardware(16.0, maximum: 16.0), 16.0)
+        assertEqual(BoostLevelSettings.normalizedForHardware(1.25, maximum: 16.0), 1.3)
+        assertEqual(BoostLevelSettings.normalizedForHardware(9.0, maximum: 3.96), 3.9)
     }
 
     private static func testLevelsAreStoredIndependentlyByDisplay() {

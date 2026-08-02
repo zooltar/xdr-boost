@@ -420,7 +420,7 @@ class XDRApp: NSObject, NSApplicationDelegate {
     func boostLevel(for screen: XDRScreenInfo) -> Double {
         if let commandLineBoostLevel,
            !displaysCustomizedDuringSession.contains(screen.persistentIdentifier) {
-            return BoostLevelSettings.normalized(
+            return BoostLevelSettings.normalizedForHardware(
                 commandLineBoostLevel,
                 maximum: Double(screen.maxEDR)
             )

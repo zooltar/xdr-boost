@@ -152,7 +152,9 @@ final class XDRPopoverViewController: NSViewController {
         let separator = NSBox()
         separator.boxType = .separator
 
-        let shortcutLabel = NSTextField(labelWithString: "Shortcut  ⌃⌥⌘V")
+        let shortcutLabel = NSTextField(
+            labelWithString: "Shortcut: Ctrl+Option+Cmd+V (⌃⌥⌘V)"
+        )
         shortcutLabel.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
         shortcutLabel.textColor = .secondaryLabelColor
 

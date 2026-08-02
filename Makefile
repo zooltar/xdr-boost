@@ -77,6 +77,7 @@ rebuild:
 	fi
 	@set -e; \
 		trap 'chown -R "$(LAUNCH_AGENT_USER):$(LAUNCH_AGENT_GROUP)" "$(BUILD_DIR)" 2>/dev/null || true' EXIT; \
+		$(MAKE) remove-agent; \
 		$(MAKE) clean; \
 		$(MAKE) dmg; \
 		$(MAKE) launch-agent

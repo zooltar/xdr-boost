@@ -1,6 +1,7 @@
 import Cocoa
 import MetalKit
 import Carbon.HIToolbox
+import ColorSync
 import ServiceManagement
 
 // MARK: - Kill switch: `xdr-boost --kill` terminates any running instance
@@ -33,32 +34,31 @@ class Renderer: NSObject, MTKViewDelegate {
     }
 }
 
+struct DisplayBoostControlModel {
+    let identifier: String
+    let name: String
+    let level: Double
+    let maximumLevel: Double
+}
+
 final class XDRPopoverViewController: NSViewController {
-    private static let presets: [(label: String, level: Double)] = [
-        ("1.5×", 1.5),
-        ("2×", 2.0),
-        ("3×", 3.0),
-        ("4×", 4.0),
-    ]
     private let showsLoginControl: Bool
     private let statusLabel = NSTextField(labelWithString: "Off")
     private let toggleSwitch = NSSwitch()
-    private let boostControl: NSSegmentedControl
+    private let displayControls = NSStackView()
+    private var displayModels: [String: DisplayBoostControlModel] = [:]
+    private var displaySignature: [String] = []
+    private var sliders: [String: NSSlider] = [:]
+    private var valueLabels: [String: NSTextField] = [:]
     private var loginButton: NSButton?
 
     var onToggle: (() -> Void)?
-    var onBoostLevelChange: ((Double) -> Void)?
+    var onBoostLevelChange: ((String, Double) -> Void)?
     var onLoginToggle: (() -> Void)?
     var onQuit: (() -> Void)?
 
     init(showsLoginControl: Bool) {
         self.showsLoginControl = showsLoginControl
-        boostControl = NSSegmentedControl(
-            labels: Self.presets.map(\.label),
-            trackingMode: .selectOne,
-            target: nil,
-            action: nil
-        )
         super.init(nibName: nil, bundle: nil)
     }
 
@@ -72,7 +72,7 @@ final class XDRPopoverViewController: NSViewController {
         background.blendingMode = .behindWindow
         background.state = .followsWindowActiveState
         view = background
-        preferredContentSize = NSSize(width: 286, height: showsLoginControl ? 220 : 190)
+        preferredContentSize = NSSize(width: 320, height: showsLoginControl ? 230 : 202)
 
         let titleLabel = NSTextField(labelWithString: "XDR Boost")
         titleLabel.font = .systemFont(ofSize: 15, weight: .semibold)
@@ -106,23 +106,21 @@ final class XDRPopoverViewController: NSViewController {
         toggleRow.orientation = .horizontal
         toggleRow.alignment = .centerY
 
-        let brightnessLabel = NSTextField(labelWithString: "Brightness")
+        let brightnessLabel = NSTextField(labelWithString: "Displays")
         brightnessLabel.font = .systemFont(ofSize: 11, weight: .semibold)
         brightnessLabel.textColor = .secondaryLabelColor
 
-        boostControl.target = self
-        boostControl.action = #selector(boostLevelChanged)
-        boostControl.segmentStyle = .rounded
-        boostControl.segmentDistribution = .fillEqually
-        boostControl.setAccessibilityLabel("Brightness level")
+        displayControls.orientation = .vertical
+        displayControls.alignment = .leading
+        displayControls.spacing = 10
 
-        let controls = NSStackView(views: [header, toggleRow, brightnessLabel, boostControl])
+        let controls = NSStackView(views: [header, toggleRow, brightnessLabel, displayControls])
         controls.orientation = .vertical
         controls.alignment = .leading
         controls.spacing = 10
         header.widthAnchor.constraint(equalTo: controls.widthAnchor).isActive = true
         toggleRow.widthAnchor.constraint(equalTo: controls.widthAnchor).isActive = true
-        boostControl.widthAnchor.constraint(equalTo: controls.widthAnchor).isActive = true
+        displayControls.widthAnchor.constraint(equalTo: controls.widthAnchor).isActive = true
 
         if showsLoginControl {
             let loginButton = NSButton(
@@ -169,32 +167,118 @@ final class XDRPopoverViewController: NSViewController {
         ])
     }
 
-    func update(isActive: Bool, boostLevel: Double, loginEnabled: Bool?) {
+    func update(isActive: Bool, displays: [DisplayBoostControlModel], loginEnabled: Bool?) {
         toggleSwitch.state = isActive ? .on : .off
-        statusLabel.stringValue = isActive ? "On · \(formatted(level: boostLevel))" : "Off"
+        if !isActive {
+            statusLabel.stringValue = "Off"
+        } else if displays.count == 1, let display = displays.first {
+            statusLabel.stringValue = "On · \(formatted(level: display.level))"
+        } else {
+            statusLabel.stringValue = "On · \(displays.count) displays"
+        }
         statusLabel.textColor = isActive ? .systemOrange : .secondaryLabelColor
 
-        let selectedIndex = Self.presets.enumerated().min {
-            abs($0.element.level - boostLevel) < abs($1.element.level - boostLevel)
-        }?.offset ?? 0
-        boostControl.selectedSegment = selectedIndex
+        let newSignature = displays.map {
+            "\($0.identifier):\($0.name):\(String(format: "%.1f", $0.maximumLevel))"
+        }
+        if newSignature != displaySignature {
+            rebuildDisplayControls(with: displays)
+            displaySignature = newSignature
+        }
+
+        displayModels = Dictionary(uniqueKeysWithValues: displays.map { ($0.identifier, $0) })
+        for display in displays {
+            sliders[display.identifier]?.doubleValue = display.level
+            sliders[display.identifier]?.setAccessibilityValue(formatted(level: display.level))
+            valueLabels[display.identifier]?.stringValue = formatted(level: display.level)
+        }
+
+        let rowCount = max(displays.count, 1)
+        let baseHeight: CGFloat = showsLoginControl ? 230 : 202
+        preferredContentSize = NSSize(width: 320, height: baseHeight + CGFloat(rowCount - 1) * 56)
 
         if let loginEnabled {
             loginButton?.state = loginEnabled ? .on : .off
         }
     }
 
+    private func rebuildDisplayControls(with displays: [DisplayBoostControlModel]) {
+        for arrangedView in displayControls.arrangedSubviews {
+            displayControls.removeArrangedSubview(arrangedView)
+            arrangedView.removeFromSuperview()
+        }
+        sliders.removeAll()
+        valueLabels.removeAll()
+
+        guard !displays.isEmpty else {
+            let emptyLabel = NSTextField(labelWithString: "No XDR-capable displays connected")
+            emptyLabel.font = .systemFont(ofSize: 12)
+            emptyLabel.textColor = .secondaryLabelColor
+            displayControls.addArrangedSubview(emptyLabel)
+            return
+        }
+
+        for display in displays {
+            let nameLabel = NSTextField(labelWithString: display.name)
+            nameLabel.font = .systemFont(ofSize: 12, weight: .medium)
+            nameLabel.lineBreakMode = .byTruncatingMiddle
+            nameLabel.toolTip = display.name
+
+            let valueLabel = NSTextField(labelWithString: formatted(level: display.level))
+            valueLabel.font = .monospacedDigitSystemFont(ofSize: 12, weight: .medium)
+            valueLabel.alignment = .right
+
+            let spacer = NSView()
+            spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
+            let displayHeader = NSStackView(views: [nameLabel, spacer, valueLabel])
+            displayHeader.orientation = .horizontal
+            displayHeader.alignment = .centerY
+
+            let slider = NSSlider(
+                value: display.level,
+                minValue: BoostLevelSettings.minimumLevel,
+                maxValue: display.maximumLevel,
+                target: self,
+                action: #selector(boostLevelChanged(_:))
+            )
+            slider.identifier = NSUserInterfaceItemIdentifier(display.identifier)
+            slider.isContinuous = true
+            slider.controlSize = .small
+            slider.setAccessibilityLabel("\(display.name) boost")
+            slider.setAccessibilityHelp(
+                "Adjust from 1.0× to \(formatted(level: display.maximumLevel)) in 0.1× steps."
+            )
+
+            let row = NSStackView(views: [displayHeader, slider])
+            row.orientation = .vertical
+            row.alignment = .leading
+            row.spacing = 4
+            displayHeader.widthAnchor.constraint(equalTo: row.widthAnchor).isActive = true
+            slider.widthAnchor.constraint(equalTo: row.widthAnchor).isActive = true
+            displayControls.addArrangedSubview(row)
+            row.widthAnchor.constraint(equalTo: displayControls.widthAnchor).isActive = true
+
+            sliders[display.identifier] = slider
+            valueLabels[display.identifier] = valueLabel
+        }
+    }
+
     private func formatted(level: Double) -> String {
-        level.rounded() == level ? "\(Int(level))×" : String(format: "%.1f×", level)
+        String(format: "%.1f×", level)
     }
 
     @objc private func toggleChanged() {
         onToggle?()
     }
 
-    @objc private func boostLevelChanged() {
-        guard boostControl.selectedSegment >= 0 else { return }
-        onBoostLevelChange?(Self.presets[boostControl.selectedSegment].level)
+    @objc private func boostLevelChanged(_ sender: NSSlider) {
+        guard let identifier = sender.identifier?.rawValue,
+              let display = displayModels[identifier] else { return }
+        let level = BoostLevelSettings.normalized(sender.doubleValue, maximum: display.maximumLevel)
+        sender.doubleValue = level
+        sender.setAccessibilityValue(formatted(level: level))
+        valueLabels[identifier]?.stringValue = formatted(level: level)
+        onBoostLevelChange?(identifier, level)
     }
 
     @objc private func loginChanged() {
@@ -206,7 +290,13 @@ final class XDRPopoverViewController: NSViewController {
     }
 }
 
-typealias XDRScreenInfo = (screen: NSScreen, id: NSNumber, maxEDR: CGFloat)
+struct XDRScreenInfo {
+    let screen: NSScreen
+    let id: NSNumber
+    let persistentIdentifier: String
+    let name: String
+    let maxEDR: CGFloat
+}
 
 class XDRApp: NSObject, NSApplicationDelegate {
     var statusItem: NSStatusItem!
@@ -214,9 +304,11 @@ class XDRApp: NSObject, NSApplicationDelegate {
     var boostViews: [NSNumber: MTKView] = [:]
     var device: MTLDevice!
     var boostRenderers: [NSNumber: Renderer] = [:]
+    let boostSettings = BoostLevelSettings()
     var isActive = false
     var shouldBeActive = false  // tracks user intent across sleep/lock cycles
-    var boostLevel: Double = 2.0
+    var commandLineBoostLevel: Double?
+    var displaysCustomizedDuringSession: Set<String> = []
     var maxEDR: CGFloat = 1.0
     var hotkeyRef: EventHotKeyRef?
     var watchdogTimer: Timer?
@@ -244,8 +336,8 @@ class XDRApp: NSObject, NSApplicationDelegate {
             fputs("No connected display supports XDR\n", stderr); exit(1)
         }
 
-        if CommandLine.arguments.count > 1, let v = Double(CommandLine.arguments[1]) {
-            boostLevel = min(max(v, 1.0), Double(maxEDR))
+        if CommandLine.arguments.count > 1, let level = Double(CommandLine.arguments[1]) {
+            commandLineBoostLevel = max(level, BoostLevelSettings.minimumLevel)
         }
 
         setupStatusBar()
@@ -263,12 +355,67 @@ class XDRApp: NSObject, NSApplicationDelegate {
         screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber
     }
 
-    func xdrScreens() -> [(screen: NSScreen, id: NSNumber, maxEDR: CGFloat)] {
-        NSScreen.screens.compactMap { screen in
+    func persistentIdentifier(for displayID: NSNumber) -> String {
+        let directDisplayID = CGDirectDisplayID(displayID.uint32Value)
+        guard let uuid = CGDisplayCreateUUIDFromDisplayID(directDisplayID)?.takeRetainedValue() else {
+            return "display-\(displayID.uint32Value)"
+        }
+        return CFUUIDCreateString(nil, uuid) as String
+    }
+
+    func xdrScreens() -> [XDRScreenInfo] {
+        let eligibleScreens = NSScreen.screens.compactMap { screen -> (NSScreen, NSNumber, CGFloat)? in
             guard let id = displayID(for: screen) else { return nil }
             let screenMaxEDR = screen.maximumPotentialExtendedDynamicRangeColorComponentValue
             guard screenMaxEDR > 1.0 else { return nil }
-            return (screen: screen, id: id, maxEDR: screenMaxEDR)
+            return (screen, id, screenMaxEDR)
+        }
+
+        let nameCounts = Dictionary(grouping: eligibleScreens, by: { $0.0.localizedName })
+            .mapValues(\.count)
+        var nameOccurrences: [String: Int] = [:]
+
+        return eligibleScreens.map { screen, id, screenMaxEDR in
+            let baseName = screen.localizedName
+            nameOccurrences[baseName, default: 0] += 1
+            let name: String
+            if nameCounts[baseName, default: 0] > 1 {
+                name = "\(baseName) \(nameOccurrences[baseName, default: 1])"
+            } else {
+                name = baseName
+            }
+            return XDRScreenInfo(
+                screen: screen,
+                id: id,
+                persistentIdentifier: persistentIdentifier(for: id),
+                name: name,
+                maxEDR: screenMaxEDR
+            )
+        }
+    }
+
+    func boostLevel(for screen: XDRScreenInfo) -> Double {
+        if let commandLineBoostLevel,
+           !displaysCustomizedDuringSession.contains(screen.persistentIdentifier) {
+            return BoostLevelSettings.normalized(
+                commandLineBoostLevel,
+                maximum: Double(screen.maxEDR)
+            )
+        }
+        return boostSettings.level(
+            for: screen.persistentIdentifier,
+            maximum: Double(screen.maxEDR)
+        )
+    }
+
+    func displayControlModels(for screens: [XDRScreenInfo]) -> [DisplayBoostControlModel] {
+        screens.map { screen in
+            DisplayBoostControlModel(
+                identifier: screen.persistentIdentifier,
+                name: screen.name,
+                level: boostLevel(for: screen),
+                maximumLevel: BoostLevelSettings.maximumSelectableLevel(for: Double(screen.maxEDR))
+            )
         }
     }
 
@@ -324,7 +471,7 @@ class XDRApp: NSObject, NSApplicationDelegate {
         boostView.colorspace = CGColorSpace(name: CGColorSpace.extendedLinearDisplayP3)
         boostView.layer?.isOpaque = false
         boostView.preferredFramesPerSecond = 10
-        let levelForScreen = min(boostLevel, Double(xdrScreen.maxEDR))
+        let levelForScreen = boostLevel(for: xdrScreen)
         boostView.clearColor = MTLClearColor(red: levelForScreen, green: levelForScreen, blue: levelForScreen, alpha: 1.0)
         if let layer = boostView.layer as? CAMetalLayer {
             layer.wantsExtendedDynamicRangeContent = true
@@ -397,7 +544,7 @@ class XDRApp: NSObject, NSApplicationDelegate {
         if force || !isActive || missingOverlay || expectedDisplayIDs != activeDisplayIDs || configChanged {
             let message: String?
             if !isActive {
-                message = "XDR ON — \(boostLevel)x on \(screens.count) display(s)\n"
+                message = "XDR ON — configured levels on \(screens.count) display(s)\n"
             } else {
                 message = reason
             }
@@ -447,7 +594,9 @@ class XDRApp: NSObject, NSApplicationDelegate {
 
         popoverController = XDRPopoverViewController(showsLoginControl: isRunningAsApp)
         popoverController.onToggle = { [weak self] in self?.toggleXDR() }
-        popoverController.onBoostLevelChange = { [weak self] level in self?.setBoostLevel(level) }
+        popoverController.onBoostLevelChange = { [weak self] displayIdentifier, level in
+            self?.setBoostLevel(level, for: displayIdentifier)
+        }
         popoverController.onLoginToggle = { [weak self] in self?.toggleLoginItem() }
         popoverController.onQuit = { [weak self] in self?.quit() }
         popoverController.loadViewIfNeeded()
@@ -472,6 +621,7 @@ class XDRApp: NSObject, NSApplicationDelegate {
 
     func updatePopoverUI() {
         guard popoverController != nil else { return }
+        let screens = xdrScreens()
         let loginEnabled: Bool?
         if isRunningAsApp, #available(macOS 13.0, *) {
             loginEnabled = SMAppService.mainApp.status == .enabled
@@ -480,7 +630,7 @@ class XDRApp: NSObject, NSApplicationDelegate {
         }
         popoverController.update(
             isActive: isActive,
-            boostLevel: boostLevel,
+            displays: displayControlModels(for: screens),
             loginEnabled: loginEnabled
         )
     }
@@ -515,6 +665,7 @@ class XDRApp: NSObject, NSApplicationDelegate {
 
     @objc func handleDisplayChange() {
         maxEDR = globalMaxEDR()
+        updatePopoverUI()
         guard shouldBeActive else { return }
 
         let screens = xdrScreens()
@@ -632,14 +783,25 @@ class XDRApp: NSObject, NSApplicationDelegate {
         updatePopoverUI()
     }
 
-    func setBoostLevel(_ level: Double) {
-        boostLevel = level
+    func setBoostLevel(_ level: Double, for displayIdentifier: String) {
+        guard let screen = xdrScreens().first(where: {
+            $0.persistentIdentifier == displayIdentifier
+        }) else { return }
+
+        displaysCustomizedDuringSession.insert(displayIdentifier)
+        let normalizedLevel = boostSettings.setLevel(
+            level,
+            for: displayIdentifier,
+            maximum: Double(screen.maxEDR)
+        )
         if isActive {
-            let maxEDRByScreen = Dictionary(uniqueKeysWithValues: xdrScreens().map { ($0.id, Double($0.maxEDR)) })
-            for (screenID, view) in boostViews {
-                let screenMaxEDR = maxEDRByScreen[screenID] ?? Double(maxEDR)
-                let levelForScreen = min(boostLevel, screenMaxEDR)
-                view.clearColor = MTLClearColor(red: levelForScreen, green: levelForScreen, blue: levelForScreen, alpha: 1.0)
+            if let view = boostViews[screen.id] {
+                view.clearColor = MTLClearColor(
+                    red: normalizedLevel,
+                    green: normalizedLevel,
+                    blue: normalizedLevel,
+                    alpha: 1.0
+                )
                 view.draw()
             }
             updatePopoverUI()
@@ -658,7 +820,10 @@ class XDRApp: NSObject, NSApplicationDelegate {
             return
         }
 
-        installOverlays(for: screens, logMessage: "XDR ON — \(boostLevel)x on \(screens.count) display(s)\n")
+        installOverlays(
+            for: screens,
+            logMessage: "XDR ON — configured levels on \(screens.count) display(s)\n"
+        )
     }
 
     func deactivate(logMessage: String? = nil) {

@@ -5,12 +5,19 @@ BUILD_DIR = .build
 APP_NAME = XDR Boost
 APP_BUNDLE = $(BUILD_DIR)/$(APP_NAME).app
 
-.PHONY: build install uninstall clean launch-agent remove-agent app dmg
+.PHONY: build test install uninstall clean launch-agent remove-agent app dmg
 
 build:
 	@mkdir -p $(BUILD_DIR)
-	swiftc -O -o $(BUILD_DIR)/$(BINARY) Sources/main.swift \
-		-framework Cocoa -framework MetalKit -framework Metal
+	swiftc -O -o $(BUILD_DIR)/$(BINARY) Sources/*.swift \
+		-framework Cocoa -framework MetalKit -framework Metal -framework ColorSync
+
+test:
+	@mkdir -p $(BUILD_DIR)
+	swiftc -warnings-as-errors -parse-as-library \
+		-o $(BUILD_DIR)/boost-level-settings-tests \
+		Sources/BoostLevelSettings.swift Tests/BoostLevelSettingsTests.swift
+	$(BUILD_DIR)/boost-level-settings-tests
 
 install: build
 	install -d $(PREFIX)/bin

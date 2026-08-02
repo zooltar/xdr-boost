@@ -33,6 +33,179 @@ class Renderer: NSObject, MTKViewDelegate {
     }
 }
 
+final class XDRPopoverViewController: NSViewController {
+    private static let presets: [(label: String, level: Double)] = [
+        ("1.5×", 1.5),
+        ("2×", 2.0),
+        ("3×", 3.0),
+        ("4×", 4.0),
+    ]
+    private let showsLoginControl: Bool
+    private let statusLabel = NSTextField(labelWithString: "Off")
+    private let toggleSwitch = NSSwitch()
+    private let boostControl: NSSegmentedControl
+    private var loginButton: NSButton?
+
+    var onToggle: (() -> Void)?
+    var onBoostLevelChange: ((Double) -> Void)?
+    var onLoginToggle: (() -> Void)?
+    var onQuit: (() -> Void)?
+
+    init(showsLoginControl: Bool) {
+        self.showsLoginControl = showsLoginControl
+        boostControl = NSSegmentedControl(
+            labels: Self.presets.map(\.label),
+            trackingMode: .selectOne,
+            target: nil,
+            action: nil
+        )
+        super.init(nibName: nil, bundle: nil)
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override func loadView() {
+        let background = NSVisualEffectView()
+        background.material = .popover
+        background.blendingMode = .behindWindow
+        background.state = .followsWindowActiveState
+        view = background
+        preferredContentSize = NSSize(width: 286, height: showsLoginControl ? 220 : 190)
+
+        let titleLabel = NSTextField(labelWithString: "XDR Boost")
+        titleLabel.font = .systemFont(ofSize: 15, weight: .semibold)
+
+        statusLabel.font = .systemFont(ofSize: 12, weight: .medium)
+        statusLabel.textColor = .secondaryLabelColor
+        statusLabel.alignment = .right
+
+        let headerSpacer = NSView()
+        headerSpacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        let header = NSStackView(views: [titleLabel, headerSpacer, statusLabel])
+        header.orientation = .horizontal
+        header.alignment = .centerY
+
+        let toggleTitle = NSTextField(labelWithString: "Extended brightness")
+        toggleTitle.font = .systemFont(ofSize: 13, weight: .medium)
+        let toggleDescription = NSTextField(labelWithString: "Use the display's extra XDR brightness.")
+        toggleDescription.font = .systemFont(ofSize: 11)
+        toggleDescription.textColor = .secondaryLabelColor
+        let toggleLabels = NSStackView(views: [toggleTitle, toggleDescription])
+        toggleLabels.orientation = .vertical
+        toggleLabels.alignment = .leading
+        toggleLabels.spacing = 2
+
+        toggleSwitch.target = self
+        toggleSwitch.action = #selector(toggleChanged)
+        toggleSwitch.setAccessibilityLabel("Extended brightness")
+        let toggleSpacer = NSView()
+        toggleSpacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        let toggleRow = NSStackView(views: [toggleLabels, toggleSpacer, toggleSwitch])
+        toggleRow.orientation = .horizontal
+        toggleRow.alignment = .centerY
+
+        let brightnessLabel = NSTextField(labelWithString: "Brightness")
+        brightnessLabel.font = .systemFont(ofSize: 11, weight: .semibold)
+        brightnessLabel.textColor = .secondaryLabelColor
+
+        boostControl.target = self
+        boostControl.action = #selector(boostLevelChanged)
+        boostControl.segmentStyle = .rounded
+        boostControl.segmentDistribution = .fillEqually
+        boostControl.setAccessibilityLabel("Brightness level")
+
+        let controls = NSStackView(views: [header, toggleRow, brightnessLabel, boostControl])
+        controls.orientation = .vertical
+        controls.alignment = .leading
+        controls.spacing = 10
+        header.widthAnchor.constraint(equalTo: controls.widthAnchor).isActive = true
+        toggleRow.widthAnchor.constraint(equalTo: controls.widthAnchor).isActive = true
+        boostControl.widthAnchor.constraint(equalTo: controls.widthAnchor).isActive = true
+
+        if showsLoginControl {
+            let loginButton = NSButton(
+                checkboxWithTitle: "Start at Login",
+                target: self,
+                action: #selector(loginChanged)
+            )
+            loginButton.font = .systemFont(ofSize: 12)
+            controls.addArrangedSubview(loginButton)
+            self.loginButton = loginButton
+        }
+
+        let separator = NSBox()
+        separator.boxType = .separator
+
+        let shortcutLabel = NSTextField(labelWithString: "Shortcut  ⌃⌥⌘V")
+        shortcutLabel.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
+        shortcutLabel.textColor = .secondaryLabelColor
+
+        let footerSpacer = NSView()
+        footerSpacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        let quitButton = NSButton(title: "Quit", target: self, action: #selector(quit))
+        quitButton.bezelStyle = .inline
+        quitButton.font = .systemFont(ofSize: 12)
+        let footer = NSStackView(views: [shortcutLabel, footerSpacer, quitButton])
+        footer.orientation = .horizontal
+        footer.alignment = .centerY
+
+        let root = NSStackView(views: [controls, separator, footer])
+        root.translatesAutoresizingMaskIntoConstraints = false
+        root.orientation = .vertical
+        root.alignment = .leading
+        root.spacing = 10
+        background.addSubview(root)
+
+        NSLayoutConstraint.activate([
+            root.leadingAnchor.constraint(equalTo: background.leadingAnchor, constant: 16),
+            root.trailingAnchor.constraint(equalTo: background.trailingAnchor, constant: -16),
+            root.topAnchor.constraint(equalTo: background.topAnchor, constant: 14),
+            root.bottomAnchor.constraint(equalTo: background.bottomAnchor, constant: -12),
+            controls.widthAnchor.constraint(equalTo: root.widthAnchor),
+            separator.widthAnchor.constraint(equalTo: root.widthAnchor),
+            footer.widthAnchor.constraint(equalTo: root.widthAnchor),
+        ])
+    }
+
+    func update(isActive: Bool, boostLevel: Double, loginEnabled: Bool?) {
+        toggleSwitch.state = isActive ? .on : .off
+        statusLabel.stringValue = isActive ? "On · \(formatted(level: boostLevel))" : "Off"
+        statusLabel.textColor = isActive ? .systemOrange : .secondaryLabelColor
+
+        let selectedIndex = Self.presets.enumerated().min {
+            abs($0.element.level - boostLevel) < abs($1.element.level - boostLevel)
+        }?.offset ?? 0
+        boostControl.selectedSegment = selectedIndex
+
+        if let loginEnabled {
+            loginButton?.state = loginEnabled ? .on : .off
+        }
+    }
+
+    private func formatted(level: Double) -> String {
+        level.rounded() == level ? "\(Int(level))×" : String(format: "%.1f×", level)
+    }
+
+    @objc private func toggleChanged() {
+        onToggle?()
+    }
+
+    @objc private func boostLevelChanged() {
+        guard boostControl.selectedSegment >= 0 else { return }
+        onBoostLevelChange?(Self.presets[boostControl.selectedSegment].level)
+    }
+
+    @objc private func loginChanged() {
+        onLoginToggle?()
+    }
+
+    @objc private func quit() {
+        onQuit?()
+    }
+}
+
 typealias XDRScreenInfo = (screen: NSScreen, id: NSNumber, maxEDR: CGFloat)
 
 class XDRApp: NSObject, NSApplicationDelegate {
@@ -54,10 +227,8 @@ class XDRApp: NSObject, NSApplicationDelegate {
     var suppressedForScreenshot = false
     var screenshotRestoreTimer: Timer?
 
-    var toggleItem: NSMenuItem!
-    var shortcutItem: NSMenuItem!
-    var loginItem: NSMenuItem!
-    var boostItems: [NSMenuItem] = []
+    var statusPopover: NSPopover!
+    var popoverController: XDRPopoverViewController!
 
     var isRunningAsApp: Bool {
         Bundle.main.bundlePath.hasSuffix(".app")
@@ -124,8 +295,15 @@ class XDRApp: NSObject, NSApplicationDelegate {
 
     func setActiveUI(_ active: Bool) {
         isActive = active
-        statusItem.button?.title = active ? "☀︎" : "☀"
-        toggleItem.title = active ? "Turn Off" : "Turn On"
+        if let button = statusItem.button {
+            button.image = NSImage(
+                systemSymbolName: active ? "sun.max.fill" : "sun.max",
+                accessibilityDescription: active ? "XDR Boost on" : "XDR Boost off"
+            )
+            button.image?.isTemplate = true
+            button.toolTip = active ? "XDR Boost is on" : "XDR Boost is off"
+        }
+        updatePopoverUI()
     }
 
     func makeOverlay(for xdrScreen: XDRScreenInfo) -> (window: NSWindow, view: MTKView, renderer: Renderer) {
@@ -260,58 +438,51 @@ class XDRApp: NSObject, NSApplicationDelegate {
     func setupStatusBar() {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         if let button = statusItem.button {
-            button.title = "☀"
+            button.image = NSImage(systemSymbolName: "sun.max", accessibilityDescription: "XDR Boost off")
+            button.image?.isTemplate = true
+            button.toolTip = "XDR Boost is off"
+            button.target = self
+            button.action = #selector(togglePopover)
         }
 
-        let menu = NSMenu()
+        popoverController = XDRPopoverViewController(showsLoginControl: isRunningAsApp)
+        popoverController.onToggle = { [weak self] in self?.toggleXDR() }
+        popoverController.onBoostLevelChange = { [weak self] level in self?.setBoostLevel(level) }
+        popoverController.onLoginToggle = { [weak self] in self?.toggleLoginItem() }
+        popoverController.onQuit = { [weak self] in self?.quit() }
+        popoverController.loadViewIfNeeded()
 
-        toggleItem = NSMenuItem(title: "Turn On", action: #selector(toggleXDR), keyEquivalent: "b")
-        toggleItem.target = self
-        menu.addItem(toggleItem)
+        statusPopover = NSPopover()
+        statusPopover.behavior = .transient
+        statusPopover.animates = true
+        statusPopover.contentViewController = popoverController
+        updatePopoverUI()
+    }
 
-        shortcutItem = NSMenuItem(title: "Shortcut: Ctrl+Option+Cmd+V", action: nil, keyEquivalent: "")
-        shortcutItem.isEnabled = false
-        menu.addItem(shortcutItem)
-
-        menu.addItem(NSMenuItem.separator())
-
-        let levelHeader = NSMenuItem(title: "Brightness Level", action: nil, keyEquivalent: "")
-        levelHeader.isEnabled = false
-        menu.addItem(levelHeader)
-
-        let levels: [(String, Double)] = [
-            ("1.5x — Subtle", 1.5),
-            ("2.0x — Normal", 2.0),
-            ("3.0x — Bright", 3.0),
-            ("4.0x — Max", 4.0),
-        ]
-
-        for (title, level) in levels {
-            let item = NSMenuItem(title: title, action: #selector(setBoostLevel(_:)), keyEquivalent: "")
-            item.target = self
-            item.tag = Int(level * 100)
-            item.state = (level == boostLevel) ? .on : .off
-            menu.addItem(item)
-            boostItems.append(item)
+    @objc func togglePopover() {
+        guard let button = statusItem.button else { return }
+        if statusPopover.isShown {
+            statusPopover.performClose(nil)
+        } else {
+            updatePopoverUI()
+            statusPopover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+            NSApp.activate(ignoringOtherApps: true)
         }
+    }
 
-        if isRunningAsApp {
-            menu.addItem(NSMenuItem.separator())
-            loginItem = NSMenuItem(title: "Start at Login", action: #selector(toggleLoginItem), keyEquivalent: "")
-            loginItem.target = self
-            if #available(macOS 13.0, *) {
-                loginItem.state = SMAppService.mainApp.status == .enabled ? .on : .off
-            }
-            menu.addItem(loginItem)
+    func updatePopoverUI() {
+        guard popoverController != nil else { return }
+        let loginEnabled: Bool?
+        if isRunningAsApp, #available(macOS 13.0, *) {
+            loginEnabled = SMAppService.mainApp.status == .enabled
+        } else {
+            loginEnabled = nil
         }
-
-        menu.addItem(NSMenuItem.separator())
-
-        let quitItem = NSMenuItem(title: "Quit", action: #selector(quit), keyEquivalent: "q")
-        quitItem.target = self
-        menu.addItem(quitItem)
-
-        statusItem.menu = menu
+        popoverController.update(
+            isActive: isActive,
+            boostLevel: boostLevel,
+            loginEnabled: loginEnabled
+        )
     }
 
     // MARK: - Watchdog & Display Changes
@@ -458,13 +629,11 @@ class XDRApp: NSObject, NSApplicationDelegate {
             shouldBeActive = true
             activate()
         }
+        updatePopoverUI()
     }
 
-    @objc func setBoostLevel(_ sender: NSMenuItem) {
-        boostLevel = Double(sender.tag) / 100.0
-        for item in boostItems {
-            item.state = (item.tag == sender.tag) ? .on : .off
-        }
+    func setBoostLevel(_ level: Double) {
+        boostLevel = level
         if isActive {
             let maxEDRByScreen = Dictionary(uniqueKeysWithValues: xdrScreens().map { ($0.id, Double($0.maxEDR)) })
             for (screenID, view) in boostViews {
@@ -473,6 +642,7 @@ class XDRApp: NSObject, NSApplicationDelegate {
                 view.clearColor = MTLClearColor(red: levelForScreen, green: levelForScreen, blue: levelForScreen, alpha: 1.0)
                 view.draw()
             }
+            updatePopoverUI()
         } else {
             shouldBeActive = true
             activate()
@@ -518,7 +688,7 @@ class XDRApp: NSObject, NSApplicationDelegate {
             } catch {
                 fputs("Login item toggle failed: \(error)\n", stderr)
             }
-            loginItem.state = SMAppService.mainApp.status == .enabled ? .on : .off
+            updatePopoverUI()
         }
     }
 

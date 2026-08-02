@@ -17,22 +17,25 @@ enum BoostLevelSettingsTests {
     }
 
     private static func testLevelsAreStoredIndependentlyByDisplay() {
-        let suiteName = "BoostLevelSettingsTests.\(UUID().uuidString)"
-        guard let defaults = UserDefaults(suiteName: suiteName) else {
-            fatalError("Could not create isolated defaults suite")
+        withIsolatedSettings { settings, defaults in
+            assertEqual(settings.setLevel(1.7, for: "display-a", maximum: 4.0), 1.7)
+            assertEqual(settings.setLevel(3.2, for: "display-b", maximum: 4.0), 3.2)
+
+            let reloadedSettings = BoostLevelSettings(defaults: defaults)
+            assertEqual(reloadedSettings.level(for: "display-a", maximum: 4.0), 1.7)
+            assertEqual(reloadedSettings.level(for: "display-b", maximum: 3.0), 3.0)
         }
-        defer { defaults.removePersistentDomain(forName: suiteName) }
-
-        let settings = BoostLevelSettings(defaults: defaults)
-        assertEqual(settings.setLevel(1.7, for: "display-a", maximum: 4.0), 1.7)
-        assertEqual(settings.setLevel(3.2, for: "display-b", maximum: 4.0), 3.2)
-
-        let reloadedSettings = BoostLevelSettings(defaults: defaults)
-        assertEqual(reloadedSettings.level(for: "display-a", maximum: 4.0), 1.7)
-        assertEqual(reloadedSettings.level(for: "display-b", maximum: 3.0), 3.0)
     }
 
     private static func testFallbackIsUsedForUnknownDisplay() {
+        withIsolatedSettings { settings, _ in
+            assertEqual(settings.level(for: "new-display", maximum: 1.85), 1.8)
+        }
+    }
+
+    private static func withIsolatedSettings(
+        _ body: (BoostLevelSettings, UserDefaults) -> Void
+    ) {
         let suiteName = "BoostLevelSettingsTests.\(UUID().uuidString)"
         guard let defaults = UserDefaults(suiteName: suiteName) else {
             fatalError("Could not create isolated defaults suite")
@@ -40,7 +43,7 @@ enum BoostLevelSettingsTests {
         defer { defaults.removePersistentDomain(forName: suiteName) }
 
         let settings = BoostLevelSettings(defaults: defaults)
-        assertEqual(settings.level(for: "new-display", maximum: 1.85), 1.8)
+        body(settings, defaults)
     }
 
     private static func assertEqual(

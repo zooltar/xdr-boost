@@ -42,14 +42,30 @@ struct DisplayBoostControlModel {
 }
 
 final class XDRPopoverViewController: NSViewController {
+    private struct DisplayControlLayout: Equatable {
+        let identifier: String
+        let name: String
+        let maximumLevel: Double
+    }
+
+    private final class DisplayControlRow {
+        var model: DisplayBoostControlModel
+        let slider: NSSlider
+        let valueLabel: NSTextField
+
+        init(model: DisplayBoostControlModel, slider: NSSlider, valueLabel: NSTextField) {
+            self.model = model
+            self.slider = slider
+            self.valueLabel = valueLabel
+        }
+    }
+
     private let showsLoginControl: Bool
     private let statusLabel = NSTextField(labelWithString: "Off")
     private let toggleSwitch = NSSwitch()
     private let displayControls = NSStackView()
-    private var displayModels: [String: DisplayBoostControlModel] = [:]
-    private var displaySignature: [String] = []
-    private var sliders: [String: NSSlider] = [:]
-    private var valueLabels: [String: NSTextField] = [:]
+    private var displayLayout: [DisplayControlLayout] = []
+    private var displayRows: [String: DisplayControlRow] = [:]
     private var loginButton: NSButton?
 
     var onToggle: (() -> Void)?
@@ -178,19 +194,24 @@ final class XDRPopoverViewController: NSViewController {
         }
         statusLabel.textColor = isActive ? .systemOrange : .secondaryLabelColor
 
-        let newSignature = displays.map {
-            "\($0.identifier):\($0.name):\(String(format: "%.1f", $0.maximumLevel))"
+        let newLayout = displays.map {
+            DisplayControlLayout(
+                identifier: $0.identifier,
+                name: $0.name,
+                maximumLevel: $0.maximumLevel
+            )
         }
-        if newSignature != displaySignature {
+        if newLayout != displayLayout {
             rebuildDisplayControls(with: displays)
-            displaySignature = newSignature
+            displayLayout = newLayout
         }
 
-        displayModels = Dictionary(uniqueKeysWithValues: displays.map { ($0.identifier, $0) })
         for display in displays {
-            sliders[display.identifier]?.doubleValue = display.level
-            sliders[display.identifier]?.setAccessibilityValue(formatted(level: display.level))
-            valueLabels[display.identifier]?.stringValue = formatted(level: display.level)
+            guard let row = displayRows[display.identifier] else { continue }
+            row.model = display
+            row.slider.doubleValue = display.level
+            row.slider.setAccessibilityValue(formatted(level: display.level))
+            row.valueLabel.stringValue = formatted(level: display.level)
         }
 
         let rowCount = max(displays.count, 1)
@@ -207,8 +228,7 @@ final class XDRPopoverViewController: NSViewController {
             displayControls.removeArrangedSubview(arrangedView)
             arrangedView.removeFromSuperview()
         }
-        sliders.removeAll()
-        valueLabels.removeAll()
+        displayRows.removeAll()
 
         guard !displays.isEmpty else {
             let emptyLabel = NSTextField(labelWithString: "No XDR-capable displays connected")
@@ -258,8 +278,11 @@ final class XDRPopoverViewController: NSViewController {
             displayControls.addArrangedSubview(row)
             row.widthAnchor.constraint(equalTo: displayControls.widthAnchor).isActive = true
 
-            sliders[display.identifier] = slider
-            valueLabels[display.identifier] = valueLabel
+            displayRows[display.identifier] = DisplayControlRow(
+                model: display,
+                slider: slider,
+                valueLabel: valueLabel
+            )
         }
     }
 
@@ -273,11 +296,11 @@ final class XDRPopoverViewController: NSViewController {
 
     @objc private func boostLevelChanged(_ sender: NSSlider) {
         guard let identifier = sender.identifier?.rawValue,
-              let display = displayModels[identifier] else { return }
-        let level = BoostLevelSettings.normalized(sender.doubleValue, maximum: display.maximumLevel)
+              let row = displayRows[identifier] else { return }
+        let level = BoostLevelSettings.normalized(sender.doubleValue, maximum: row.model.maximumLevel)
         sender.doubleValue = level
         sender.setAccessibilityValue(formatted(level: level))
-        valueLabels[identifier]?.stringValue = formatted(level: level)
+        row.valueLabel.stringValue = formatted(level: level)
         onBoostLevelChange?(identifier, level)
     }
 

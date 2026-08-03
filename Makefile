@@ -1,6 +1,9 @@
 PREFIX ?= /usr/local
 BINARY = xdr-boost
 BUILD_DIR = .build
+ARCH ?= $(shell uname -m)
+MACOSX_DEPLOYMENT_TARGET ?= 26.0
+SWIFT_TARGET = $(ARCH)-apple-macosx$(MACOSX_DEPLOYMENT_TARGET)
 
 APP_NAME = XDR Boost
 APP_BUNDLE = $(BUILD_DIR)/$(APP_NAME).app
@@ -17,12 +20,12 @@ LAUNCH_AGENT_PLIST = $(LAUNCH_AGENT_DIR)/com.xdr-boost.agent.plist
 
 build:
 	@mkdir -p $(BUILD_DIR)
-	swiftc -O -o $(BUILD_DIR)/$(BINARY) Sources/*.swift \
+	swiftc -O -target $(SWIFT_TARGET) -o $(BUILD_DIR)/$(BINARY) Sources/*.swift \
 		-framework Cocoa -framework MetalKit -framework Metal -framework ColorSync
 
 test:
 	@mkdir -p $(BUILD_DIR)
-	swiftc -warnings-as-errors -parse-as-library \
+	swiftc -warnings-as-errors -parse-as-library -target $(SWIFT_TARGET) \
 		-o $(BUILD_DIR)/boost-level-settings-tests \
 		Sources/BoostLevelSettings.swift Tests/BoostLevelSettingsTests.swift
 	$(BUILD_DIR)/boost-level-settings-tests

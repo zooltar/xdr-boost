@@ -26,22 +26,24 @@ xdr-boost creates an invisible Metal overlay using `multiply` compositing with E
 ## Requirements
 
 - MacBook Pro with Liquid Retina XDR display (M1 Pro/Max or later)
-- macOS 12.0+
+- macOS 26.0+
 
 ## Install
 
 ### Download (recommended)
 
-1. Download `XDR-Boost.dmg` from [Releases](https://github.com/levelsio/xdr-boost/releases)
+1. Download `XDR-Boost.dmg` from the [latest release](https://github.com/zooltar/xdr-boost/releases/latest)
 2. Open the DMG and drag **XDR Boost** to **Applications**
 3. Open **XDR Boost** from Applications
 4. First time: right-click > Open, then click Open in the dialog
 5. Click the **☀** menu bar icon > **Start at Login** to auto-start on login
 
+Release downloads are built for Apple silicon and are ad-hoc signed, but not notarized. macOS may therefore show a security warning on first launch; using **right-click > Open** once allows the app to run. Every push and pull request also produces a 90-day `xdr-boost-macos-arm64` archive containing the DMG under the corresponding GitHub Actions run. Version tags matching `v*` publish the same DMG to GitHub Releases automatically.
+
 ### Build from source
 
 ```bash
-git clone https://github.com/levelsio/xdr-boost.git
+git clone https://github.com/zooltar/xdr-boost.git
 cd xdr-boost
 make app
 ```

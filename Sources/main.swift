@@ -6,15 +6,22 @@ import ServiceManagement
 
 // MARK: - Kill switch: `xdr-boost --kill` terminates any running instance
 if CommandLine.arguments.contains("--kill") || CommandLine.arguments.contains("-k") {
+    // Match the exact process name: `-f` also matched editors, shells, and
+    // builds whose command line mentions the xdr-boost checkout.
     let pipe = Pipe()
     let proc = Process()
-    proc.executableURL = URL(fileURLWithPath: "/usr/bin/pkill")
-    proc.arguments = ["-f", "xdr-boost"]
+    proc.executableURL = URL(fileURLWithPath: "/usr/bin/pgrep")
+    proc.arguments = ["-x", "xdr-boost"]
     proc.standardOutput = pipe
-    proc.standardError = pipe
     try? proc.run()
+    let output = String(decoding: pipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
     proc.waitUntilExit()
-    fputs("All xdr-boost instances killed\n", stderr)
+    // Skip ourselves so the confirmation below is always printed.
+    let pids = output.split(whereSeparator: \.isNewline)
+        .compactMap { pid_t($0) }
+        .filter { $0 != getpid() }
+    pids.forEach { kill($0, SIGTERM) }
+    fputs("Killed \(pids.count) xdr-boost instance(s)\n", stderr)
     exit(0)
 }
 

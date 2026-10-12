@@ -13,6 +13,7 @@ final class StatusPanel: NSPanel {
     private static let shadowInsets = NSEdgeInsets(top: menuBarGap, left: 28, bottom: 36, right: 28)
 
     private let controlsController: NSViewController
+    private let glassView = NSGlassEffectView()
     private var presentationID = 0
 
     var onCancel: (() -> Void)?
@@ -35,17 +36,16 @@ final class StatusPanel: NSPanel {
         isReleasedWhenClosed = false
         collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .transient, .ignoresCycle]
 
-        let glass = NSGlassEffectView()
-        glass.cornerRadius = Self.cornerRadius
-        glass.contentView = controlsController.view
-        glass.translatesAutoresizingMaskIntoConstraints = false
+        glassView.cornerRadius = Self.cornerRadius
+        glassView.contentView = controlsController.view
+        glassView.translatesAutoresizingMaskIntoConstraints = false
         let container = NSView()
-        container.addSubview(glass)
+        container.addSubview(glassView)
         NSLayoutConstraint.activate([
-            glass.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: Self.shadowInsets.left),
-            glass.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -Self.shadowInsets.right),
-            glass.topAnchor.constraint(equalTo: container.topAnchor, constant: Self.shadowInsets.top),
-            glass.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -Self.shadowInsets.bottom),
+            glassView.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: Self.shadowInsets.left),
+            glassView.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -Self.shadowInsets.right),
+            glassView.topAnchor.constraint(equalTo: container.topAnchor, constant: Self.shadowInsets.top),
+            glassView.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -Self.shadowInsets.bottom),
         ])
         contentView = container
     }
@@ -57,6 +57,21 @@ final class StatusPanel: NSPanel {
 
     override func cancelOperation(_ sender: Any?) {
         onCancel?()
+    }
+
+    override func sendEvent(_ event: NSEvent) {
+        // Clicks in the transparent shadow inset still land on this window, so
+        // the outside-click monitor never sees them. Treat them as outside.
+        switch event.type {
+        case .leftMouseDown, .rightMouseDown, .otherMouseDown:
+            if !glassView.frame.contains(event.locationInWindow) {
+                onCancel?()
+                return
+            }
+        default:
+            break
+        }
+        super.sendEvent(event)
     }
 
     func show(below button: NSStatusBarButton) {

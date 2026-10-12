@@ -55,7 +55,7 @@ cd xdr-boost
 make app
 ```
 
-The app will be at `.build/XDR Boost.app`. To create a DMG:
+Building needs the macOS 27 SDK (Xcode 27 or its Command Line Tools), even though the app runs on macOS 26.0 and later. The app will be at `.build/XDR Boost.app`. To create a DMG:
 
 ```bash
 make dmg

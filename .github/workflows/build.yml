@@ -16,7 +16,9 @@ permissions:
 jobs:
   build:
     name: Build and archive
-    runs-on: macos-26
+    # The macOS 27 SDK is required to compile the menu bar panel's expanded
+    # interface session; the app still deploys to macOS 26.0.
+    runs-on: xcode-27
     timeout-minutes: 15
 
     steps:

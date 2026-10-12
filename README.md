@@ -64,10 +64,10 @@ make dmg
 ### CLI install (advanced)
 
 ```bash
-make build
-sudo make install
-make launch-agent   # auto-start on login
+sudo make launch-agent   # auto-start on login
 ```
+
+This installs `xdr-boost` into `/usr/local/bin` and **XDR Boost.app** into `/Applications`, then registers a launch agent that starts the app at login. The agent runs the app bundle rather than the bare binary so macOS can show it in its privacy prompts and in the Input Monitoring list. To rebuild and reinstall everything in one step, run `sudo make rebuild`.
 
 The launch agent restarts xdr-boost only if it crashes. Choosing **Quit** keeps it stopped until the next login; to start it again sooner, run `launchctl kickstart gui/$(id -u)/com.xdr-boost`. The same command starts it if it isn't running after a reinstall.
 
@@ -77,8 +77,7 @@ The launch agent restarts xdr-boost only if it crashes. Choosing **Quit** keeps 
 
 **CLI:**
 ```bash
-make remove-agent
-sudo make uninstall
+sudo make uninstall   # removes the launch agent, /usr/local/bin/xdr-boost, and /Applications/XDR Boost.app
 ```
 
 ## Usage
@@ -104,7 +103,7 @@ Click the **☀** icon in your menu bar to open the compact controls. From there
 
 While a macOS screenshot shortcut (**⌘⇧3**, **⌘⇧4**, **⌘⇧5**, or **⌘⇧6**) is capturing, xdr-boost briefly hides the boost so the image isn't distorted. Detecting those shortcuts needs **Input Monitoring** access, which macOS asks for the first time you turn boost on. If you dismissed that prompt, the menu bar panel shows a warning with an **Allow…** button that opens the right pane in System Settings > Privacy & Security.
 
-Release and source builds are ad-hoc signed, so macOS treats each rebuild or update as a new app and the earlier grant stops applying. If screenshots stop hiding the boost after an update, remove XDR Boost (or `xdr-boost` for the CLI) from the Input Monitoring list and allow it again.
+Release and source builds are ad-hoc signed, so macOS treats each rebuild or update as a new app and the earlier grant stops applying. If screenshots stop hiding the boost after an update, remove XDR Boost from the Input Monitoring list with **−** and allow it again.
 
 ### Emergency kill
 

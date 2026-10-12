@@ -514,8 +514,12 @@ class XDRApp: NSObject, NSApplicationDelegate {
     var statusPopover: NSPopover?          // macOS 26: system popover
     var panelClickMonitor: Any?
 
-    var isRunningAsApp: Bool {
+    /// The app bundle manages its own login item, unless the CLI launch agent
+    /// started it: the agent already handles login, and a second login item
+    /// would only race it.
+    var managesLoginItem: Bool {
         Bundle.main.bundlePath.hasSuffix(".app")
+            && ProcessInfo.processInfo.environment["XDR_BOOST_LAUNCH_AGENT"] != "1"
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -795,7 +799,7 @@ class XDRApp: NSObject, NSApplicationDelegate {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         updateStatusItemImage()
 
-        controlsController = XDRControlsViewController(showsLoginControl: isRunningAsApp)
+        controlsController = XDRControlsViewController(showsLoginControl: managesLoginItem)
         controlsController.onToggle = { [weak self] in self?.toggleXDR() }
         controlsController.onBoostLevelChange = { [weak self] displayIdentifier, level in
             self?.setBoostLevel(level, for: displayIdentifier)
@@ -847,7 +851,7 @@ class XDRApp: NSObject, NSApplicationDelegate {
     }
 
     func refreshSystemState() {
-        if isRunningAsApp, #available(macOS 13.0, *) {
+        if managesLoginItem, #available(macOS 13.0, *) {
             loginItemEnabled = SMAppService.mainApp.status == .enabled
         } else {
             loginItemEnabled = nil

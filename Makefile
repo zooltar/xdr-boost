@@ -7,6 +7,8 @@ SWIFT_TARGET = $(ARCH)-apple-macosx$(MACOSX_DEPLOYMENT_TARGET)
 
 APP_NAME = XDR Boost
 APP_BUNDLE = $(BUILD_DIR)/$(APP_NAME).app
+APP_INSTALL_DIR ?= /Applications
+INSTALLED_APP = $(APP_INSTALL_DIR)/$(APP_NAME).app
 
 LAUNCH_AGENT_USER = $(if $(SUDO_USER),$(SUDO_USER),$(USER))
 LAUNCH_AGENT_UID = $(shell id -u "$(LAUNCH_AGENT_USER)")
@@ -15,7 +17,7 @@ LAUNCH_AGENT_HOME = $(if $(SUDO_USER),$(shell dscl . -read "/Users/$(SUDO_USER)"
 LAUNCH_AGENT_DIR = $(LAUNCH_AGENT_HOME)/Library/LaunchAgents
 LAUNCH_AGENT_PLIST = $(LAUNCH_AGENT_DIR)/com.xdr-boost.agent.plist
 
-.PHONY: build test install uninstall clean launch-agent remove-agent app dmg
+.PHONY: build test install install-app uninstall clean launch-agent remove-agent app dmg
 .PHONY: rebuild
 
 build:
@@ -34,13 +36,24 @@ install: build
 	install -d $(PREFIX)/bin
 	install -m 755 $(BUILD_DIR)/$(BINARY) $(PREFIX)/bin/$(BINARY)
 
+# The launch agent runs the app bundle rather than the bare binary: macOS
+# privacy prompts and the Input Monitoring list need an app to show.
+install-app: app
+	@test -n "$(APP_INSTALL_DIR)" || { echo "APP_INSTALL_DIR is empty"; exit 1; }
+	install -d "$(APP_INSTALL_DIR)"
+	rm -rf "$(INSTALLED_APP)"
+	ditto "$(APP_BUNDLE)" "$(INSTALLED_APP)"
+	chown -R "$(LAUNCH_AGENT_USER):$(LAUNCH_AGENT_GROUP)" "$(INSTALLED_APP)"
+
 uninstall: remove-agent
 	rm -f $(PREFIX)/bin/$(BINARY)
+	@test -n "$(APP_INSTALL_DIR)" || { echo "APP_INSTALL_DIR is empty"; exit 1; }
+	rm -rf "$(INSTALLED_APP)"
 
 # Install LaunchAgent to start on login
-launch-agent: install
+launch-agent: install install-app
 	@install -d -o "$(LAUNCH_AGENT_USER)" -g "$(LAUNCH_AGENT_GROUP)" "$(LAUNCH_AGENT_DIR)"
-	@sed "s|__BINARY__|$(PREFIX)/bin/$(BINARY)|g" \
+	@sed "s|__BINARY__|$(INSTALLED_APP)/Contents/MacOS/$(BINARY)|g" \
 		com.xdr-boost.agent.plist > "$(LAUNCH_AGENT_PLIST)"
 	@chown "$(LAUNCH_AGENT_USER):$(LAUNCH_AGENT_GROUP)" "$(LAUNCH_AGENT_PLIST)"
 	-@launchctl bootout "gui/$(LAUNCH_AGENT_UID)" "$(LAUNCH_AGENT_PLIST)" 2>/dev/null

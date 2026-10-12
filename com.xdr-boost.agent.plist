@@ -8,6 +8,11 @@
     <array>
         <string>__BINARY__</string>
     </array>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>XDR_BOOST_LAUNCH_AGENT</key>
+        <string>1</string>
+    </dict>
     <key>RunAtLoad</key>
     <true/>
     <key>KeepAlive</key>

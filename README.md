@@ -21,7 +21,7 @@ Unlocks the full brightness of your Liquid Retina XDR display beyond the standar
 - Survives sleep/wake, lid close/open, and lock/unlock — brightness auto-restores
 - Starts with XDR off — rebooting always gives you a normal screen
 - Emergency kill switch (`xdr-boost --kill`) if anything goes wrong
-- Single binary, no dependencies, ~250 lines of Swift
+- Single binary, no dependencies
 - Launch agent for auto-start on login
 
 ## How it works

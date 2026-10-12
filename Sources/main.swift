@@ -1,7 +1,6 @@
 import Cocoa
 import MetalKit
 import Carbon.HIToolbox
-import ColorSync
 import ServiceManagement
 
 // MARK: - Kill switch: `xdr-boost --kill` terminates any running instance
@@ -494,7 +493,6 @@ class XDRApp: NSObject, NSApplicationDelegate {
     }
     var commandLineBoostLevel: Double?
     var displaysCustomizedDuringSession: Set<String> = []
-    var maxEDR: CGFloat = 1.0
     var hotkeyRef: EventHotKeyRef?
     var watchdogTimer: Timer?
     var displayRefreshWorkItem: DispatchWorkItem?
@@ -525,11 +523,11 @@ class XDRApp: NSObject, NSApplicationDelegate {
             fputs("No Metal device\n", stderr); exit(1)
         }
         device = dev
-        maxEDR = globalMaxEDR()
+        let launchScreens = xdrScreens()
         // Keep running without an XDR display (lid closed on an external
         // monitor, or a login before displays settle). The controls show an
         // empty state and boost becomes available once one connects.
-        if maxEDR <= 1.0 {
+        if launchScreens.isEmpty {
             fputs("No connected display supports XDR yet\n", stderr)
         }
 
@@ -543,7 +541,9 @@ class XDRApp: NSObject, NSApplicationDelegate {
         observeScreenshots()
         fputs("XDR Boost ready — click menu bar icon or press Ctrl+Option+Cmd+V to toggle\n", stderr)
         fputs("Emergency kill: run `xdr-boost --kill` or press Ctrl+Option+Cmd+V\n", stderr)
-        fputs("Max EDR: \(maxEDR)x\n", stderr)
+        for screen in launchScreens {
+            fputs("\(screen.name): max EDR \(screen.maxEDR)x\n", stderr)
+        }
     }
 
     // MARK: - Global Hotkey (Ctrl+Option+Cmd+V)
@@ -614,10 +614,6 @@ class XDRApp: NSObject, NSApplicationDelegate {
                 maximumLevel: BoostLevelSettings.maximumSelectableLevel(for: Double(screen.maxEDR))
             )
         }
-    }
-
-    func globalMaxEDR() -> CGFloat {
-        xdrScreens().map(\.maxEDR).max() ?? 1.0
     }
 
     func displaySignature(for screens: [XDRScreenInfo]) -> String {
@@ -734,7 +730,6 @@ class XDRApp: NSObject, NSApplicationDelegate {
     }
 
     func refreshDisplaysIfNeeded(reason: String? = nil) {
-        maxEDR = globalMaxEDR()
         let screens = xdrScreens()
 
         guard shouldBeActive else { return }
@@ -932,7 +927,6 @@ class XDRApp: NSObject, NSApplicationDelegate {
     }
 
     @objc func handleDisplayChange() {
-        maxEDR = globalMaxEDR()
         updateControls()
         guard shouldBeActive else { return }
 

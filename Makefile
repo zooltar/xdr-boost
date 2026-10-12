@@ -21,7 +21,7 @@ LAUNCH_AGENT_PLIST = $(LAUNCH_AGENT_DIR)/com.xdr-boost.agent.plist
 build:
 	@mkdir -p $(BUILD_DIR)
 	swiftc -O -target $(SWIFT_TARGET) -o $(BUILD_DIR)/$(BINARY) Sources/*.swift \
-		-framework Cocoa -framework MetalKit -framework Metal -framework ColorSync
+		-framework Cocoa -framework MetalKit -framework Metal
 
 test:
 	@mkdir -p $(BUILD_DIR)

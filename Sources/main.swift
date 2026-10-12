@@ -41,7 +41,84 @@ struct DisplayBoostControlModel {
     let maximumLevel: Double
 }
 
-final class XDRPopoverViewController: NSViewController {
+/// Rounded platter that groups related rows on top of the glass, without
+/// stacking a second glass layer.
+private final class CardView: NSView {
+    init(content: NSView, cornerRadius: CGFloat, insets: NSEdgeInsets) {
+        super.init(frame: .zero)
+        wantsLayer = true
+        layer?.cornerRadius = cornerRadius
+        layer?.cornerCurve = .continuous
+        content.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(content)
+        NSLayoutConstraint.activate([
+            content.leadingAnchor.constraint(equalTo: leadingAnchor, constant: insets.left),
+            content.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -insets.right),
+            content.topAnchor.constraint(equalTo: topAnchor, constant: insets.top),
+            content.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -insets.bottom),
+        ])
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override var wantsUpdateLayer: Bool { true }
+
+    override func updateLayer() {
+        // Resolved against the current appearance, so light/dark switches apply.
+        layer?.backgroundColor = NSColor.quaternarySystemFill.cgColor
+    }
+}
+
+/// Control Center–style round symbol badge that lights up while boosting.
+private final class SymbolBadgeView: NSView {
+    private static let diameter: CGFloat = 28
+    private let imageView = NSImageView()
+
+    var isOn = false {
+        didSet {
+            guard isOn != oldValue else { return }
+            imageView.contentTintColor = isOn ? .white : .secondaryLabelColor
+            needsDisplay = true
+        }
+    }
+
+    init(symbolName: String) {
+        super.init(frame: .zero)
+        wantsLayer = true
+        layer?.cornerRadius = Self.diameter / 2
+        imageView.image = NSImage(systemSymbolName: symbolName, accessibilityDescription: nil)
+        imageView.symbolConfiguration = .init(pointSize: 14, weight: .semibold)
+        imageView.contentTintColor = .secondaryLabelColor
+        imageView.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(imageView)
+        NSLayoutConstraint.activate([
+            widthAnchor.constraint(equalToConstant: Self.diameter),
+            heightAnchor.constraint(equalToConstant: Self.diameter),
+            imageView.centerXAnchor.constraint(equalTo: centerXAnchor),
+            imageView.centerYAnchor.constraint(equalTo: centerYAnchor),
+        ])
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override var wantsUpdateLayer: Bool { true }
+
+    override func updateLayer() {
+        layer?.backgroundColor = (isOn ? NSColor.systemOrange : NSColor.tertiarySystemFill).cgColor
+    }
+}
+
+/// Status item controls. Draws no background of its own: the host supplies the
+/// material (a Liquid Glass panel on macOS 27, the system popover on macOS 26).
+final class XDRControlsViewController: NSViewController {
+    private static let width: CGFloat = 300
+    private static let padding: CGFloat = 14
+    private static let cardCornerRadius: CGFloat = 10
+
     private struct DisplayControlLayout: Equatable {
         let identifier: String
         let name: String
@@ -61,10 +138,11 @@ final class XDRPopoverViewController: NSViewController {
     }
 
     private let showsLoginControl: Bool
+    private let badge = SymbolBadgeView(symbolName: "sun.max.fill")
     private let statusLabel = NSTextField(labelWithString: "Off")
     private let toggleSwitch = NSSwitch()
     private let displayControls = NSStackView()
-    private var displayLayout: [DisplayControlLayout] = []
+    private var displayLayout: [DisplayControlLayout]?
     private var displayRows: [String: DisplayControlRow] = [:]
     private var loginButton: NSButton?
 
@@ -83,60 +161,48 @@ final class XDRPopoverViewController: NSViewController {
     }
 
     override func loadView() {
-        let background = NSVisualEffectView()
-        background.material = .popover
-        background.blendingMode = .behindWindow
-        background.state = .followsWindowActiveState
-        view = background
-        preferredContentSize = NSSize(width: 320, height: showsLoginControl ? 230 : 202)
+        view = NSView()
 
         let titleLabel = NSTextField(labelWithString: "XDR Boost")
-        titleLabel.font = .systemFont(ofSize: 15, weight: .semibold)
-
-        statusLabel.font = .systemFont(ofSize: 12, weight: .medium)
+        titleLabel.font = .systemFont(ofSize: 13, weight: .semibold)
+        statusLabel.font = .systemFont(ofSize: 11)
         statusLabel.textColor = .secondaryLabelColor
-        statusLabel.alignment = .right
-
-        let headerSpacer = NSView()
-        headerSpacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        let header = NSStackView(views: [titleLabel, headerSpacer, statusLabel])
-        header.orientation = .horizontal
-        header.alignment = .centerY
-
-        let toggleTitle = NSTextField(labelWithString: "Extended brightness")
-        toggleTitle.font = .systemFont(ofSize: 13, weight: .medium)
-        let toggleDescription = NSTextField(labelWithString: "Use the display's extra XDR brightness.")
-        toggleDescription.font = .systemFont(ofSize: 11)
-        toggleDescription.textColor = .secondaryLabelColor
-        let toggleLabels = NSStackView(views: [toggleTitle, toggleDescription])
-        toggleLabels.orientation = .vertical
-        toggleLabels.alignment = .leading
-        toggleLabels.spacing = 2
+        let titles = NSStackView(views: [titleLabel, statusLabel])
+        titles.orientation = .vertical
+        titles.alignment = .leading
+        titles.spacing = 1
 
         toggleSwitch.target = self
         toggleSwitch.action = #selector(toggleChanged)
         toggleSwitch.setAccessibilityLabel("Extended brightness")
-        let toggleSpacer = NSView()
-        toggleSpacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        let toggleRow = NSStackView(views: [toggleLabels, toggleSpacer, toggleSwitch])
-        toggleRow.orientation = .horizontal
-        toggleRow.alignment = .centerY
+        let headerSpacer = NSView()
+        headerSpacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        let header = NSStackView(views: [badge, titles, headerSpacer, toggleSwitch])
+        header.orientation = .horizontal
+        header.alignment = .centerY
+        header.spacing = 10
 
-        let brightnessLabel = NSTextField(labelWithString: "Displays")
-        brightnessLabel.font = .systemFont(ofSize: 11, weight: .semibold)
-        brightnessLabel.textColor = .secondaryLabelColor
+        let displaysLabel = NSTextField(labelWithString: "Displays")
+        displaysLabel.font = .systemFont(ofSize: 11, weight: .semibold)
+        displaysLabel.textColor = .secondaryLabelColor
 
         displayControls.orientation = .vertical
         displayControls.alignment = .leading
-        displayControls.spacing = 10
+        displayControls.spacing = 14
+        let displaysCard = CardView(
+            content: displayControls,
+            cornerRadius: Self.cardCornerRadius,
+            insets: NSEdgeInsets(top: 10, left: 12, bottom: 12, right: 12)
+        )
 
-        let controls = NSStackView(views: [header, toggleRow, brightnessLabel, displayControls])
+        let controls = NSStackView(views: [header, displaysLabel, displaysCard])
         controls.orientation = .vertical
         controls.alignment = .leading
-        controls.spacing = 10
-        header.widthAnchor.constraint(equalTo: controls.widthAnchor).isActive = true
-        toggleRow.widthAnchor.constraint(equalTo: controls.widthAnchor).isActive = true
-        displayControls.widthAnchor.constraint(equalTo: controls.widthAnchor).isActive = true
+        controls.spacing = 6
+        controls.setCustomSpacing(14, after: header)
+        for fullWidthView in [header, displaysCard] {
+            fullWidthView.widthAnchor.constraint(equalTo: controls.widthAnchor).isActive = true
+        }
 
         if showsLoginControl {
             let loginButton = NSButton(
@@ -144,7 +210,7 @@ final class XDRPopoverViewController: NSViewController {
                 target: self,
                 action: #selector(loginChanged)
             )
-            loginButton.font = .systemFont(ofSize: 12)
+            controls.setCustomSpacing(12, after: displaysCard)
             controls.addArrangedSubview(loginButton)
             self.loginButton = loginButton
         }
@@ -155,14 +221,14 @@ final class XDRPopoverViewController: NSViewController {
         let shortcutLabel = NSTextField(
             labelWithString: "Shortcut: Ctrl+Option+Cmd+V (⌃⌥⌘V)"
         )
-        shortcutLabel.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
+        shortcutLabel.font = .systemFont(ofSize: 11)
         shortcutLabel.textColor = .secondaryLabelColor
 
         let footerSpacer = NSView()
         footerSpacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
         let quitButton = NSButton(title: "Quit", target: self, action: #selector(quit))
-        quitButton.bezelStyle = .inline
-        quitButton.font = .systemFont(ofSize: 12)
+        quitButton.bezelStyle = .glass
+        quitButton.controlSize = .small
         let footer = NSStackView(views: [shortcutLabel, footerSpacer, quitButton])
         footer.orientation = .horizontal
         footer.alignment = .centerY
@@ -172,13 +238,21 @@ final class XDRPopoverViewController: NSViewController {
         root.orientation = .vertical
         root.alignment = .leading
         root.spacing = 10
-        background.addSubview(root)
+        view.addSubview(root)
 
+        let contentWidth = Self.width - Self.padding * 2
+        // Trailing/bottom sit just below required so the host's interim frame
+        // (zero-sized before the first show) never produces a conflict.
+        let trailing = root.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -Self.padding)
+        trailing.priority = .init(999)
+        let bottom = root.bottomAnchor.constraint(equalTo: view.bottomAnchor, constant: -Self.padding)
+        bottom.priority = .init(999)
         NSLayoutConstraint.activate([
-            root.leadingAnchor.constraint(equalTo: background.leadingAnchor, constant: 16),
-            root.trailingAnchor.constraint(equalTo: background.trailingAnchor, constant: -16),
-            root.topAnchor.constraint(equalTo: background.topAnchor, constant: 14),
-            root.bottomAnchor.constraint(equalTo: background.bottomAnchor, constant: -12),
+            root.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: Self.padding),
+            root.topAnchor.constraint(equalTo: view.topAnchor, constant: Self.padding),
+            trailing,
+            bottom,
+            root.widthAnchor.constraint(equalToConstant: contentWidth),
             controls.widthAnchor.constraint(equalTo: root.widthAnchor),
             separator.widthAnchor.constraint(equalTo: root.widthAnchor),
             footer.widthAnchor.constraint(equalTo: root.widthAnchor),
@@ -187,14 +261,16 @@ final class XDRPopoverViewController: NSViewController {
 
     func update(isActive: Bool, displays: [DisplayBoostControlModel], loginEnabled: Bool?) {
         toggleSwitch.state = isActive ? .on : .off
-        if !isActive {
+        badge.isOn = isActive
+        if displays.isEmpty {
+            statusLabel.stringValue = "No XDR display"
+        } else if !isActive {
             statusLabel.stringValue = "Off"
         } else if displays.count == 1, let display = displays.first {
             statusLabel.stringValue = "On · \(formatted(level: display.level))"
         } else {
             statusLabel.stringValue = "On · \(displays.count) displays"
         }
-        statusLabel.textColor = isActive ? .systemOrange : .secondaryLabelColor
 
         let newLayout = displays.map {
             DisplayControlLayout(
@@ -206,6 +282,8 @@ final class XDRPopoverViewController: NSViewController {
         if newLayout != displayLayout {
             rebuildDisplayControls(with: displays)
             displayLayout = newLayout
+            view.layoutSubtreeIfNeeded()
+            preferredContentSize = view.fittingSize
         }
 
         for display in displays {
@@ -215,10 +293,6 @@ final class XDRPopoverViewController: NSViewController {
             row.slider.setAccessibilityValue(formatted(level: display.level))
             row.valueLabel.stringValue = formatted(level: display.level)
         }
-
-        let rowCount = max(displays.count, 1)
-        let baseHeight: CGFloat = showsLoginControl ? 230 : 202
-        preferredContentSize = NSSize(width: 320, height: baseHeight + CGFloat(rowCount - 1) * 56)
 
         if let loginEnabled {
             loginButton?.state = loginEnabled ? .on : .off
@@ -245,9 +319,11 @@ final class XDRPopoverViewController: NSViewController {
             nameLabel.font = .systemFont(ofSize: 12, weight: .medium)
             nameLabel.lineBreakMode = .byTruncatingMiddle
             nameLabel.toolTip = display.name
+            nameLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
             let valueLabel = NSTextField(labelWithString: formatted(level: display.level))
             valueLabel.font = .monospacedDigitSystemFont(ofSize: 12, weight: .medium)
+            valueLabel.textColor = .secondaryLabelColor
             valueLabel.alignment = .right
 
             let spacer = NSView()
@@ -265,18 +341,26 @@ final class XDRPopoverViewController: NSViewController {
             )
             slider.identifier = NSUserInterfaceItemIdentifier(display.identifier)
             slider.isContinuous = true
-            slider.controlSize = .small
             slider.setAccessibilityLabel("\(display.name) boost")
             slider.setAccessibilityHelp(
                 "Adjust from 1.0× to \(formatted(level: display.maximumLevel)) in 0.1× steps."
             )
 
-            let row = NSStackView(views: [displayHeader, slider])
+            let sliderRow = NSStackView(views: [
+                sliderSymbol("sun.min", pointSize: 11),
+                slider,
+                sliderSymbol("sun.max", pointSize: 14),
+            ])
+            sliderRow.orientation = .horizontal
+            sliderRow.alignment = .centerY
+            sliderRow.spacing = 8
+
+            let row = NSStackView(views: [displayHeader, sliderRow])
             row.orientation = .vertical
             row.alignment = .leading
             row.spacing = 4
             displayHeader.widthAnchor.constraint(equalTo: row.widthAnchor).isActive = true
-            slider.widthAnchor.constraint(equalTo: row.widthAnchor).isActive = true
+            sliderRow.widthAnchor.constraint(equalTo: row.widthAnchor).isActive = true
             displayControls.addArrangedSubview(row)
             row.widthAnchor.constraint(equalTo: displayControls.widthAnchor).isActive = true
 
@@ -286,6 +370,15 @@ final class XDRPopoverViewController: NSViewController {
                 valueLabel: valueLabel
             )
         }
+    }
+
+    private func sliderSymbol(_ symbolName: String, pointSize: CGFloat) -> NSImageView {
+        let imageView = NSImageView()
+        imageView.image = NSImage(systemSymbolName: symbolName, accessibilityDescription: nil)
+        imageView.symbolConfiguration = .init(pointSize: pointSize, weight: .regular)
+        imageView.contentTintColor = .secondaryLabelColor
+        imageView.setContentHuggingPriority(.required, for: .horizontal)
+        return imageView
     }
 
     private func formatted(level: Double) -> String {
@@ -344,8 +437,10 @@ class XDRApp: NSObject, NSApplicationDelegate {
     var suppressedForScreenshot = false
     var screenshotRestoreTimer: Timer?
 
-    var statusPopover: NSPopover!
-    var popoverController: XDRPopoverViewController!
+    var controlsController: XDRControlsViewController!
+    var statusPanel: StatusPanel?          // macOS 27+: glass panel in a menu bar session
+    var statusPopover: NSPopover?          // macOS 26: system popover
+    var panelClickMonitor: Any?
 
     var isRunningAsApp: Bool {
         Bundle.main.bundlePath.hasSuffix(".app")
@@ -467,15 +562,20 @@ class XDRApp: NSObject, NSApplicationDelegate {
 
     func setActiveUI(_ active: Bool) {
         isActive = active
-        if let button = statusItem.button {
-            button.image = NSImage(
-                systemSymbolName: active ? "sun.max.fill" : "sun.max",
-                accessibilityDescription: active ? "XDR Boost on" : "XDR Boost off"
-            )
-            button.image?.isTemplate = true
-            button.toolTip = active ? "XDR Boost is on" : "XDR Boost is off"
-        }
-        updatePopoverUI()
+        updateStatusItemImage()
+        updateControls()
+    }
+
+    func updateStatusItemImage() {
+        guard let button = statusItem.button else { return }
+        // A small vs. large filled sun stays tellable apart at menu bar size,
+        // unlike outline vs. filled versions of the same glyph.
+        button.image = NSImage(
+            systemSymbolName: isActive ? "sun.max.fill" : "sun.min",
+            accessibilityDescription: isActive ? "XDR Boost on" : "XDR Boost off"
+        )
+        button.image?.isTemplate = true
+        button.toolTip = isActive ? "XDR Boost is on" : "XDR Boost is off"
     }
 
     func makeOverlay(for xdrScreen: XDRScreenInfo) -> (window: NSWindow, view: MTKView, renderer: Renderer) {
@@ -609,43 +709,56 @@ class XDRApp: NSObject, NSApplicationDelegate {
 
     func setupStatusBar() {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        if let button = statusItem.button {
-            button.image = NSImage(systemSymbolName: "sun.max", accessibilityDescription: "XDR Boost off")
-            button.image?.isTemplate = true
-            button.toolTip = "XDR Boost is off"
-            button.target = self
-            button.action = #selector(togglePopover)
-        }
+        updateStatusItemImage()
 
-        popoverController = XDRPopoverViewController(showsLoginControl: isRunningAsApp)
-        popoverController.onToggle = { [weak self] in self?.toggleXDR() }
-        popoverController.onBoostLevelChange = { [weak self] displayIdentifier, level in
+        controlsController = XDRControlsViewController(showsLoginControl: isRunningAsApp)
+        controlsController.onToggle = { [weak self] in self?.toggleXDR() }
+        controlsController.onBoostLevelChange = { [weak self] displayIdentifier, level in
             self?.setBoostLevel(level, for: displayIdentifier)
         }
-        popoverController.onLoginToggle = { [weak self] in self?.toggleLoginItem() }
-        popoverController.onQuit = { [weak self] in self?.quit() }
-        popoverController.loadViewIfNeeded()
+        controlsController.onLoginToggle = { [weak self] in self?.toggleLoginItem() }
+        controlsController.onQuit = { [weak self] in self?.quit() }
+        controlsController.loadViewIfNeeded()
 
-        statusPopover = NSPopover()
-        statusPopover.behavior = .transient
-        statusPopover.animates = true
-        statusPopover.contentViewController = popoverController
-        updatePopoverUI()
+        if #available(macOS 27.0, *) {
+            // The menu bar owns the open/close lifecycle, so the item joins
+            // menu tracking (sliding across extras, keyboard navigation) like
+            // the system's own items. No target/action on the button.
+            let panel = StatusPanel(controlsController: controlsController)
+            panel.onCancel = { [weak self] in self?.endStatusPanelSession() }
+            statusPanel = panel
+            statusItem.expandedInterfaceDelegate = self
+        } else {
+            statusItem.button?.target = self
+            statusItem.button?.action = #selector(togglePopover)
+            let popover = NSPopover()
+            popover.behavior = .transient
+            popover.animates = true
+            popover.contentViewController = controlsController
+            statusPopover = popover
+        }
+        updateControls()
     }
 
     @objc func togglePopover() {
-        guard let button = statusItem.button else { return }
+        guard let button = statusItem.button, let statusPopover else { return }
         if statusPopover.isShown {
             statusPopover.performClose(nil)
         } else {
-            updatePopoverUI()
+            updateControls()
             statusPopover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
-            NSApp.activate(ignoringOtherApps: true)
+            NSApp.activate()
         }
     }
 
-    func updatePopoverUI() {
-        guard popoverController != nil else { return }
+    func endStatusPanelSession() {
+        if #available(macOS 27.0, *) {
+            statusItem.expandedInterfaceSession?.cancel()
+        }
+    }
+
+    func updateControls() {
+        guard controlsController != nil else { return }
         let screens = xdrScreens()
         let loginEnabled: Bool?
         if isRunningAsApp, #available(macOS 13.0, *) {
@@ -653,11 +766,13 @@ class XDRApp: NSObject, NSApplicationDelegate {
         } else {
             loginEnabled = nil
         }
-        popoverController.update(
+        controlsController.update(
             isActive: isActive,
             displays: displayControlModels(for: screens),
             loginEnabled: loginEnabled
         )
+        statusItem.button?.appearsDisabled = screens.isEmpty
+        statusPanel?.resizeToFit()
     }
 
     // MARK: - Watchdog & Display Changes
@@ -690,7 +805,7 @@ class XDRApp: NSObject, NSApplicationDelegate {
 
     @objc func handleDisplayChange() {
         maxEDR = globalMaxEDR()
-        updatePopoverUI()
+        updateControls()
         guard shouldBeActive else { return }
 
         let screens = xdrScreens()
@@ -805,7 +920,7 @@ class XDRApp: NSObject, NSApplicationDelegate {
             shouldBeActive = true
             activate()
         }
-        updatePopoverUI()
+        updateControls()
     }
 
     func setBoostLevel(_ level: Double, for displayIdentifier: String) {
@@ -829,7 +944,7 @@ class XDRApp: NSObject, NSApplicationDelegate {
                 )
                 view.draw()
             }
-            updatePopoverUI()
+            updateControls()
         } else {
             shouldBeActive = true
             activate()
@@ -878,13 +993,44 @@ class XDRApp: NSObject, NSApplicationDelegate {
             } catch {
                 fputs("Login item toggle failed: \(error)\n", stderr)
             }
-            updatePopoverUI()
+            updateControls()
         }
     }
 
     @objc func quit() {
+        endStatusPanelSession()
         deactivate(logMessage: "XDR OFF\n")
         NSApp.terminate(nil)
+    }
+}
+
+@available(macOS 27.0, *)
+extension XDRApp: NSStatusItemExpandedInterfaceDelegate {
+    func statusItem(
+        _ statusItem: NSStatusItem,
+        didBegin expandedInterfaceSession: NSStatusItemExpandedInterfaceSession
+    ) {
+        guard let button = statusItem.button, let statusPanel else {
+            expandedInterfaceSession.cancel()
+            return
+        }
+        updateControls()
+        statusPanel.show(below: button)
+        // Clicks in other apps end the session; mouse monitors need no
+        // Accessibility permission. Our own windows never reach this monitor.
+        panelClickMonitor = NSEvent.addGlobalMonitorForEvents(
+            matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown]
+        ) { [weak self] _ in
+            self?.endStatusPanelSession()
+        }
+    }
+
+    func statusItemDidEndExpandedInterfaceSession(_ statusItem: NSStatusItem, animated: Bool) {
+        if let panelClickMonitor {
+            NSEvent.removeMonitor(panelClickMonitor)
+            self.panelClickMonitor = nil
+        }
+        statusPanel?.dismiss(animated: animated)
     }
 }
 

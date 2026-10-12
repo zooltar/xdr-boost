@@ -487,7 +487,11 @@ class XDRApp: NSObject, NSApplicationDelegate {
     var boostRenderers: [NSNumber: Renderer] = [:]
     let boostSettings = BoostLevelSettings()
     var isActive = false
-    var shouldBeActive = false  // tracks user intent across sleep/lock cycles
+    var shouldBeActive = false {  // tracks user intent across sleep/lock cycles
+        didSet {
+            if shouldBeActive != oldValue { updateWatchdog() }
+        }
+    }
     var commandLineBoostLevel: Double?
     var displaysCustomizedDuringSession: Set<String> = []
     var maxEDR: CGFloat = 1.0
@@ -729,7 +733,7 @@ class XDRApp: NSObject, NSApplicationDelegate {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.75, execute: workItem)
     }
 
-    func refreshDisplaysIfNeeded(reason: String? = nil, force: Bool = false) {
+    func refreshDisplaysIfNeeded(reason: String? = nil) {
         maxEDR = globalMaxEDR()
         let screens = xdrScreens()
 
@@ -748,7 +752,7 @@ class XDRApp: NSObject, NSApplicationDelegate {
         let currentSignature = displaySignature(for: screens)
         let configChanged = activeDisplaySignature != currentSignature
 
-        if force || !isActive || missingOverlay || expectedDisplayIDs != activeDisplayIDs || configChanged {
+        if !isActive || missingOverlay || expectedDisplayIDs != activeDisplayIDs || configChanged {
             let message: String?
             if !isActive {
                 message = "XDR ON — configured levels on \(screens.count) display(s)\n"
@@ -880,25 +884,26 @@ class XDRApp: NSObject, NSApplicationDelegate {
         NotificationCenter.default.addObserver(
             self, selector: #selector(handleDisplayChange),
             name: NSApplication.didChangeScreenParametersNotification, object: nil)
+    }
 
-        // Watchdog: every 3 seconds, check if XDR should be on but overlay is dead
-        // This handles sleep/wake, lid close/open, lock/unlock — all of them
-        watchdogTimer = Timer.scheduledTimer(withTimeInterval: 3.0, repeats: true) { [weak self] _ in
-            guard let self = self, !self.suppressedForScreenshot else { return }
-            if self.shouldBeActive && !self.isActive {
-                self.refreshDisplaysIfNeeded(reason: "Watchdog — XDR restored\n", force: true)
-            } else if self.shouldBeActive && self.isActive {
-                let screens = self.xdrScreens()
-                let expectedDisplayIDs = Set(screens.map(\.id))
-                let activeDisplayIDs = Set(self.overlayWindows.keys)
-                let missingOverlay = self.overlayWindows.values.contains { !$0.isVisible }
-                let configChanged = self.activeDisplaySignature != self.displaySignature(for: screens)
-
-                if missingOverlay || expectedDisplayIDs != activeDisplayIDs || configChanged {
-                    self.refreshDisplaysIfNeeded(reason: "Watchdog — overlay recreated\n", force: true)
-                }
-            }
+    // Watchdog: while boost is wanted, every 3 seconds restore it if an overlay
+    // died or the displays changed. This handles sleep/wake, lid close/open,
+    // lock/unlock — all of them. With boost off there is nothing to restore,
+    // so the timer stops instead of waking the CPU for nothing.
+    func updateWatchdog() {
+        guard shouldBeActive else {
+            watchdogTimer?.invalidate()
+            watchdogTimer = nil
+            return
         }
+        guard watchdogTimer == nil else { return }
+        let timer = Timer.scheduledTimer(withTimeInterval: 3.0, repeats: true) { [weak self] _ in
+            // Overlays hidden for a capture would look dead; leave them alone.
+            guard let self, !self.suppressedForScreenshot else { return }
+            self.refreshDisplaysIfNeeded(reason: "Watchdog — overlay recreated\n")
+        }
+        timer.tolerance = 1.0
+        watchdogTimer = timer
     }
 
     // About 1.5 s after an overlay stops presenting, macOS frees the

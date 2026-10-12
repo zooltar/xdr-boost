@@ -1081,6 +1081,18 @@ extension XDRApp: NSStatusItemExpandedInterfaceDelegate {
     }
 }
 
+// One instance per user: the launch agent plus the app bundle (or two CLI
+// runs) would stack a second multiply overlay and compound the boost. The
+// kernel releases the lock when the process exits, including after a crash.
+let instanceLockPath = FileManager.default
+    .urls(for: .cachesDirectory, in: .userDomainMask)[0]
+    .appendingPathComponent("xdr-boost.lock").path
+let instanceLock = open(instanceLockPath, O_CREAT | O_RDWR, 0o600)
+if instanceLock >= 0, flock(instanceLock, LOCK_EX | LOCK_NB) != 0 {
+    fputs("xdr-boost is already running\n", stderr)
+    exit(0)  // a successful exit, so the launch agent doesn't relaunch it
+}
+
 let app = NSApplication.shared
 app.setActivationPolicy(.accessory)
 let del = XDRApp()

@@ -266,12 +266,20 @@ final class XDRControlsViewController: NSViewController {
         ])
     }
 
-    func update(isActive: Bool, displays: [DisplayBoostControlModel], loginEnabled: Bool?) {
-        toggleSwitch.state = isActive ? .on : .off
+    /// - Parameters:
+    ///   - isEnabled: The user wants boost on, even if no XDR display can show it yet.
+    ///   - isActive: Overlays are currently boosting.
+    func update(
+        isEnabled: Bool,
+        isActive: Bool,
+        displays: [DisplayBoostControlModel],
+        loginEnabled: Bool?
+    ) {
+        toggleSwitch.state = isEnabled ? .on : .off
         badge.isOn = isActive
         if displays.isEmpty {
-            statusLabel.stringValue = "No XDR display"
-        } else if !isActive {
+            statusLabel.stringValue = isEnabled ? "Waiting for an XDR display" : "No XDR display"
+        } else if !isEnabled {
             statusLabel.stringValue = "Off"
         } else if displays.count == 1, let display = displays.first {
             statusLabel.stringValue = "On · \(formatted(level: display.level))"
@@ -787,6 +795,7 @@ class XDRApp: NSObject, NSApplicationDelegate {
             loginEnabled = nil
         }
         controlsController.update(
+            isEnabled: shouldBeActive,
             isActive: isActive,
             displays: displayControlModels(for: screens),
             loginEnabled: loginEnabled
@@ -959,7 +968,10 @@ class XDRApp: NSObject, NSApplicationDelegate {
     // MARK: - Toggle
 
     @objc func toggleXDR() {
-        if isActive {
+        // Toggle the user's intent, not the overlay state: with only non-XDR
+        // displays attached the overlay is down while the intent is still on,
+        // and toggling must be able to clear it.
+        if shouldBeActive {
             shouldBeActive = false
             deactivate(logMessage: "XDR OFF\n")
         } else {

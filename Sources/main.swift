@@ -912,11 +912,19 @@ class XDRApp: NSObject, NSApplicationDelegate {
     // executable path — otherwise a renamed id breaks detection and the overlay
     // gets restored mid-capture (which is what corrupts ⌘⇧4-Space window shots).
     func isCaptureUI(_ app: NSRunningApplication) -> Bool {
-        if let id = app.bundleIdentifier,
-           id == "com.apple.screencaptureui" || id == "com.apple.screenshot" {
+        let captureBundleIDs: Set = [
+            "com.apple.screencaptureui",
+            "com.apple.screenshot",
+            "com.apple.screenshot.launcher",  // Screenshot.app on macOS 27
+        ]
+        if let id = app.bundleIdentifier, captureBundleIDs.contains(id) {
             return true
         }
+        // Only trust the path for Apple's apps on the system volume: a bare
+        // "screenshot" match also caught third-party apps that stay running,
+        // keeping the overlay hidden until the 30 s cap after every capture.
         let path = (app.bundleURL ?? app.executableURL)?.path.lowercased() ?? ""
+        guard path.hasPrefix("/system/") else { return false }
         return path.contains("screencaptureui") || path.contains("screenshot")
     }
 

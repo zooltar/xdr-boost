@@ -460,8 +460,11 @@ class XDRApp: NSObject, NSApplicationDelegate {
         }
         device = dev
         maxEDR = globalMaxEDR()
-        guard maxEDR > 1.0 else {
-            fputs("No connected display supports XDR\n", stderr); exit(1)
+        // Keep running without an XDR display (lid closed on an external
+        // monitor, or a login before displays settle). The controls show an
+        // empty state and boost becomes available once one connects.
+        if maxEDR <= 1.0 {
+            fputs("No connected display supports XDR yet\n", stderr)
         }
 
         if CommandLine.arguments.count > 1, let level = Double(CommandLine.arguments[1]) {

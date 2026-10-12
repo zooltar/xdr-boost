@@ -499,12 +499,10 @@ class XDRApp: NSObject, NSApplicationDelegate {
     var overlayRefreshTimer: Timer?
     var activeDisplaySignature: String?
 
-    var screenshotMonitor: Any?
-    var screenshotMonitorHasPermission = false
+    var screenshotTap: CFMachPort?
     // System-owned state, cached because each read is a round trip to another
     // process. Refreshed when the controls open or the setting changes, not
     // on every slider tick.
-    var screenshotPermissionGranted = false
     var loginItemEnabled: Bool?
     var suppressedForScreenshot = false
     var screenshotRestoreTimer: Timer?
@@ -539,6 +537,9 @@ class XDRApp: NSObject, NSApplicationDelegate {
         registerGlobalHotkey()
         observeSleepWake()
         observeScreenshots()
+        if screenshotTap == nil {
+            fputs("Screenshot detection needs Input Monitoring access (System Settings > Privacy & Security > Input Monitoring)\n", stderr)
+        }
         fputs("XDR Boost ready — click menu bar icon or press Ctrl+Option+Cmd+V to toggle\n", stderr)
         fputs("Emergency kill: run `xdr-boost --kill` or press Ctrl+Option+Cmd+V\n", stderr)
         for screen in launchScreens {
@@ -849,11 +850,8 @@ class XDRApp: NSObject, NSApplicationDelegate {
         } else {
             loginItemEnabled = nil
         }
-        screenshotPermissionGranted = screenshotMonitoringAllowed
-        if screenshotPermissionGranted, !screenshotMonitorHasPermission, screenshotMonitor != nil {
-            // Access was granted while running: reinstall so key events arrive.
-            observeScreenshots()
-        }
+        // Picks up access granted while running.
+        observeScreenshots()
     }
 
     /// Pass `screens` when the caller already scanned them, as slider drags do
@@ -866,7 +864,7 @@ class XDRApp: NSObject, NSApplicationDelegate {
             isActive: isActive,
             displays: displayControlModels(for: screens),
             loginEnabled: loginItemEnabled,
-            showsScreenshotPermissionWarning: !screenshotPermissionGranted
+            showsScreenshotPermissionWarning: screenshotTap == nil
         )
         statusItem.button?.appearsDisabled = screens.isEmpty
         statusPanel?.resizeToFit()
@@ -949,32 +947,54 @@ class XDRApp: NSObject, NSApplicationDelegate {
     // keep screenshots looking normal we briefly hide the overlay while a capture
     // is in progress, then restore it.
     //
-    // Detection: a non-consuming global key monitor watches for the system
-    // screenshot shortcuts (⌘⇧3/4/5/6). Requires Input Monitoring permission.
-
-    // Global key monitors need Input Monitoring (or Accessibility) access.
-    // Without it the monitor still installs but never receives key events, so
-    // check the permission itself rather than the returned monitor.
-    var screenshotMonitoringAllowed: Bool {
-        CGPreflightListenEventAccess() || AXIsProcessTrusted()
-    }
+    // Detection: a listen-only event tap watches for the system screenshot
+    // shortcuts (⌘⇧3/4/5/6, with or without ⌃ for the clipboard). A listen-only
+    // tap needs Input Monitoring access, which is what the app requests; an
+    // NSEvent global key monitor needs Accessibility instead. Creating the tap
+    // fails without access, so a live tap doubles as the permission check.
 
     func observeScreenshots() {
-        if let screenshotMonitor {
-            NSEvent.removeMonitor(screenshotMonitor)
-        }
-        screenshotMonitorHasPermission = screenshotMonitoringAllowed
-        // keyCodes: 3 = 20, 4 = 21, 5 = 23, 6 = 22
-        let shotKeys: Set<UInt16> = [20, 21, 23, 22]
-        screenshotMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            guard let self = self else { return }
-            let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-            if flags == [.command, .shift] && shotKeys.contains(event.keyCode) {
-                self.suppressForScreenshot()
+        // Only create the tap once access exists, so launching never prompts.
+        guard screenshotTap == nil,
+              CGPreflightListenEventAccess() || AXIsProcessTrusted() else { return }
+        let keyDownMask = CGEventMask(1 << CGEventType.keyDown.rawValue)
+        guard let tap = CGEvent.tapCreate(
+            tap: .cgSessionEventTap,
+            place: .tailAppendEventTap,
+            options: .listenOnly,
+            eventsOfInterest: keyDownMask,
+            callback: { _, type, event, userInfo in
+                if let userInfo {
+                    let app = Unmanaged<XDRApp>.fromOpaque(userInfo).takeUnretainedValue()
+                    app.handleScreenshotTapEvent(type: type, event: event)
+                }
+                return Unmanaged.passUnretained(event)
+            },
+            userInfo: Unmanaged.passUnretained(self).toOpaque()
+        ) else { return }
+        let source = CFMachPortCreateRunLoopSource(nil, tap, 0)
+        CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes)
+        CGEvent.tapEnable(tap: tap, enable: true)
+        screenshotTap = tap
+    }
+
+    func handleScreenshotTapEvent(type: CGEventType, event: CGEvent) {
+        switch type {
+        case .tapDisabledByTimeout, .tapDisabledByUserInput:
+            if let screenshotTap {
+                CGEvent.tapEnable(tap: screenshotTap, enable: true)
             }
-        }
-        if !screenshotMonitorHasPermission {
-            fputs("Screenshot detection needs Input Monitoring access (System Settings > Privacy & Security > Input Monitoring)\n", stderr)
+        case .keyDown:
+            // keyCodes: 3 = 20, 4 = 21, 5 = 23, 6 = 22
+            let shotKeys: Set<Int64> = [20, 21, 23, 22]
+            let flags = event.flags
+            if flags.contains(.maskCommand), flags.contains(.maskShift),
+               !flags.contains(.maskAlternate),
+               shotKeys.contains(event.getIntegerValueField(.keyboardEventKeycode)) {
+                suppressForScreenshot()
+            }
+        default:
+            break
         }
     }
 

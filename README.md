@@ -69,6 +69,8 @@ sudo make install
 make launch-agent   # auto-start on login
 ```
 
+The launch agent restarts xdr-boost only if it crashes. Choosing **Quit** keeps it stopped until the next login; to start it again sooner, run `launchctl kickstart gui/$(id -u)/com.xdr-boost`. The same command starts it if it isn't running after a reinstall.
+
 ### Uninstall
 
 **App:** Delete from Applications and remove from System Settings > General > Login Items.

@@ -500,6 +500,8 @@ class XDRApp: NSObject, NSApplicationDelegate {
     var activeDisplaySignature: String?
 
     var screenshotTap: CFMachPort?
+    var didRequestScreenshotPermission = false
+    var screenshotPermissionWatch: Timer?
     // System-owned state, cached because each read is a round trip to another
     // process. Refreshed when the controls open or the setting changes, not
     // on every slider tick.
@@ -998,10 +1000,44 @@ class XDRApp: NSObject, NSApplicationDelegate {
         }
     }
 
+    /// Asks for Input Monitoring the first time boost turns on, since hiding
+    /// the boost for screenshots only matters then. macOS shows its prompt
+    /// once per app; after that the warning row in the controls is the way in.
+    func requestScreenshotPermissionIfNeeded() {
+        guard screenshotTap == nil, !didRequestScreenshotPermission else { return }
+        didRequestScreenshotPermission = true
+        _ = CGRequestListenEventAccess()
+        watchForScreenshotPermission()
+    }
+
+    /// Starts detection as soon as access is granted in System Settings,
+    /// without waiting for the controls to reopen. Gives up after two minutes.
+    func watchForScreenshotPermission() {
+        screenshotPermissionWatch?.invalidate()
+        var checks = 0
+        screenshotPermissionWatch = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] timer in
+            guard let self else {
+                timer.invalidate()
+                return
+            }
+            checks += 1
+            self.observeScreenshots()
+            if self.screenshotTap != nil {
+                self.updateControls()
+            }
+            if self.screenshotTap != nil || checks >= 60 {
+                timer.invalidate()
+                self.screenshotPermissionWatch = nil
+            }
+        }
+    }
+
     func requestScreenshotPermission() {
         // Adds the app to the Input Monitoring list (prompting once), then
         // opens that pane so the user can switch it on.
+        didRequestScreenshotPermission = true
         _ = CGRequestListenEventAccess()
+        watchForScreenshotPermission()
         endStatusPanelSession()
         statusPopover?.performClose(nil)
         if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent") {
@@ -1141,6 +1177,7 @@ class XDRApp: NSObject, NSApplicationDelegate {
             for: screens,
             logMessage: "XDR ON — configured levels on \(screens.count) display(s)\n"
         )
+        requestScreenshotPermissionIfNeeded()
     }
 
     func deactivate(logMessage: String? = nil) {

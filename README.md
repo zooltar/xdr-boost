@@ -102,7 +102,7 @@ Click the **☀** icon in your menu bar to open the compact controls. From there
 
 ### Screenshots
 
-While a macOS screenshot shortcut (**⌘⇧3**, **⌘⇧4**, **⌘⇧5**, or **⌘⇧6**) is capturing, xdr-boost briefly hides the boost so the image isn't distorted. Detecting those shortcuts needs **Input Monitoring** access. If it's missing, the menu bar panel shows a warning with an **Allow…** button that opens the right pane in System Settings > Privacy & Security.
+While a macOS screenshot shortcut (**⌘⇧3**, **⌘⇧4**, **⌘⇧5**, or **⌘⇧6**) is capturing, xdr-boost briefly hides the boost so the image isn't distorted. Detecting those shortcuts needs **Input Monitoring** access, which macOS asks for the first time you turn boost on. If you dismissed that prompt, the menu bar panel shows a warning with an **Allow…** button that opens the right pane in System Settings > Privacy & Security.
 
 Release and source builds are ad-hoc signed, so macOS treats each rebuild or update as a new app and the earlier grant stops applying. If screenshots stop hiding the boost after an update, remove XDR Boost (or `xdr-boost` for the CLI) from the Input Monitoring list and allow it again.
 

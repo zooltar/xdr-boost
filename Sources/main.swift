@@ -152,11 +152,13 @@ final class XDRControlsViewController: NSViewController {
     private var displayLayout: [DisplayControlLayout]?
     private var displayRows: [String: DisplayControlRow] = [:]
     private var loginButton: NSButton?
+    private let screenshotWarning = NSStackView()
 
     var onToggle: (() -> Void)?
     var onBoostLevelChange: ((String, Double) -> Void)?
     var onLoginToggle: (() -> Void)?
     var onQuit: (() -> Void)?
+    var onRequestScreenshotPermission: (() -> Void)?
 
     init(showsLoginControl: Bool) {
         self.showsLoginControl = showsLoginControl
@@ -222,6 +224,39 @@ final class XDRControlsViewController: NSViewController {
             self.loginButton = loginButton
         }
 
+        let warningIcon = NSImageView()
+        warningIcon.image = NSImage(
+            systemSymbolName: "exclamationmark.triangle.fill",
+            accessibilityDescription: "Warning"
+        )
+        warningIcon.contentTintColor = .systemYellow
+        warningIcon.setContentHuggingPriority(.required, for: .horizontal)
+        let warningLabel = NSTextField(
+            wrappingLabelWithString: "Screenshots need permission to hide the boost."
+        )
+        warningLabel.font = .systemFont(ofSize: 11)
+        warningLabel.textColor = .secondaryLabelColor
+        warningLabel.preferredMaxLayoutWidth = 180
+        screenshotWarning.toolTip = "Allow Input Monitoring in System Settings so XDR Boost can hide the boost while ⌘⇧3, ⌘⇧4, ⌘⇧5, or ⌘⇧6 captures the screen."
+        let allowButton = NSButton(
+            title: "Allow…",
+            target: self,
+            action: #selector(requestScreenshotPermission)
+        )
+        allowButton.bezelStyle = .glass
+        allowButton.controlSize = .small
+        allowButton.setContentHuggingPriority(.required, for: .horizontal)
+        let warningSpacer = NSView()
+        warningSpacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        screenshotWarning.setViews([warningIcon, warningLabel, warningSpacer, allowButton], in: .leading)
+        screenshotWarning.orientation = .horizontal
+        screenshotWarning.alignment = .centerY
+        screenshotWarning.spacing = 8
+        screenshotWarning.isHidden = true
+        controls.setCustomSpacing(12, after: controls.arrangedSubviews.last ?? displaysCard)
+        controls.addArrangedSubview(screenshotWarning)
+        screenshotWarning.widthAnchor.constraint(equalTo: controls.widthAnchor).isActive = true
+
         let separator = NSBox()
         separator.boxType = .separator
 
@@ -273,7 +308,8 @@ final class XDRControlsViewController: NSViewController {
         isEnabled: Bool,
         isActive: Bool,
         displays: [DisplayBoostControlModel],
-        loginEnabled: Bool?
+        loginEnabled: Bool?,
+        showsScreenshotPermissionWarning: Bool
     ) {
         toggleSwitch.state = isEnabled ? .on : .off
         badge.isOn = isActive
@@ -294,9 +330,17 @@ final class XDRControlsViewController: NSViewController {
                 maximumLevel: $0.maximumLevel
             )
         }
+        var needsResize = false
         if newLayout != displayLayout {
             rebuildDisplayControls(with: displays)
             displayLayout = newLayout
+            needsResize = true
+        }
+        if screenshotWarning.isHidden == showsScreenshotPermissionWarning {
+            screenshotWarning.isHidden = !showsScreenshotPermissionWarning
+            needsResize = true
+        }
+        if needsResize {
             view.layoutSubtreeIfNeeded()
             preferredContentSize = view.fittingSize
         }
@@ -421,6 +465,10 @@ final class XDRControlsViewController: NSViewController {
     @objc private func quit() {
         onQuit?()
     }
+
+    @objc private func requestScreenshotPermission() {
+        onRequestScreenshotPermission?()
+    }
 }
 
 struct XDRScreenInfo {
@@ -450,6 +498,10 @@ class XDRApp: NSObject, NSApplicationDelegate {
     var activeDisplaySignature: String?
 
     var screenshotMonitor: Any?
+    var screenshotMonitorHasPermission = false
+    // Cached: each check is a round trip to TCC, so it runs when the controls
+    // open rather than on every update.
+    var screenshotPermissionGranted = false
     var suppressedForScreenshot = false
     var screenshotRestoreTimer: Timer?
 
@@ -746,6 +798,9 @@ class XDRApp: NSObject, NSApplicationDelegate {
         }
         controlsController.onLoginToggle = { [weak self] in self?.toggleLoginItem() }
         controlsController.onQuit = { [weak self] in self?.quit() }
+        controlsController.onRequestScreenshotPermission = { [weak self] in
+            self?.requestScreenshotPermission()
+        }
         controlsController.loadViewIfNeeded()
 
         if #available(macOS 27.0, *) {
@@ -765,6 +820,7 @@ class XDRApp: NSObject, NSApplicationDelegate {
             popover.contentViewController = controlsController
             statusPopover = popover
         }
+        refreshScreenshotPermission()
         updateControls()
     }
 
@@ -773,6 +829,7 @@ class XDRApp: NSObject, NSApplicationDelegate {
         if statusPopover.isShown {
             statusPopover.performClose(nil)
         } else {
+            refreshScreenshotPermission()
             updateControls()
             statusPopover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
             NSApp.activate()
@@ -782,6 +839,14 @@ class XDRApp: NSObject, NSApplicationDelegate {
     func endStatusPanelSession() {
         if #available(macOS 27.0, *) {
             statusItem.expandedInterfaceSession?.cancel()
+        }
+    }
+
+    func refreshScreenshotPermission() {
+        screenshotPermissionGranted = screenshotMonitoringAllowed
+        if screenshotPermissionGranted, !screenshotMonitorHasPermission, screenshotMonitor != nil {
+            // Access was granted while running: reinstall so key events arrive.
+            observeScreenshots()
         }
     }
 
@@ -798,7 +863,8 @@ class XDRApp: NSObject, NSApplicationDelegate {
             isEnabled: shouldBeActive,
             isActive: isActive,
             displays: displayControlModels(for: screens),
-            loginEnabled: loginEnabled
+            loginEnabled: loginEnabled,
+            showsScreenshotPermissionWarning: !screenshotPermissionGranted
         )
         statusItem.button?.appearsDisabled = screens.isEmpty
         statusPanel?.resizeToFit()
@@ -884,7 +950,18 @@ class XDRApp: NSObject, NSApplicationDelegate {
     // Detection: a non-consuming global key monitor watches for the system
     // screenshot shortcuts (⌘⇧3/4/5/6). Requires Input Monitoring permission.
 
+    // Global key monitors need Input Monitoring (or Accessibility) access.
+    // Without it the monitor still installs but never receives key events, so
+    // check the permission itself rather than the returned monitor.
+    var screenshotMonitoringAllowed: Bool {
+        CGPreflightListenEventAccess() || AXIsProcessTrusted()
+    }
+
     func observeScreenshots() {
+        if let screenshotMonitor {
+            NSEvent.removeMonitor(screenshotMonitor)
+        }
+        screenshotMonitorHasPermission = screenshotMonitoringAllowed
         // keyCodes: 3 = 20, 4 = 21, 5 = 23, 6 = 22
         let shotKeys: Set<UInt16> = [20, 21, 23, 22]
         screenshotMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] event in
@@ -894,8 +971,19 @@ class XDRApp: NSObject, NSApplicationDelegate {
                 self.suppressForScreenshot()
             }
         }
-        if screenshotMonitor == nil {
-            fputs("Could not install screenshot monitor (grant Input Monitoring permission)\n", stderr)
+        if !screenshotMonitorHasPermission {
+            fputs("Screenshot detection needs Input Monitoring access (System Settings > Privacy & Security > Input Monitoring)\n", stderr)
+        }
+    }
+
+    func requestScreenshotPermission() {
+        // Adds the app to the Input Monitoring list (prompting once), then
+        // opens that pane so the user can switch it on.
+        _ = CGRequestListenEventAccess()
+        endStatusPanelSession()
+        statusPopover?.performClose(nil)
+        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent") {
+            NSWorkspace.shared.open(url)
         }
     }
 
@@ -1081,6 +1169,7 @@ extension XDRApp: NSStatusItemExpandedInterfaceDelegate {
             expandedInterfaceSession.cancel()
             return
         }
+        refreshScreenshotPermission()
         updateControls()
         statusPanel.show(below: button)
         // Clicks in other apps end the session; mouse monitors need no

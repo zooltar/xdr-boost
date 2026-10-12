@@ -499,9 +499,11 @@ class XDRApp: NSObject, NSApplicationDelegate {
 
     var screenshotMonitor: Any?
     var screenshotMonitorHasPermission = false
-    // Cached: each check is a round trip to TCC, so it runs when the controls
-    // open rather than on every update.
+    // System-owned state, cached because each read is a round trip to another
+    // process. Refreshed when the controls open or the setting changes, not
+    // on every slider tick.
     var screenshotPermissionGranted = false
+    var loginItemEnabled: Bool?
     var suppressedForScreenshot = false
     var screenshotRestoreTimer: Timer?
 
@@ -820,7 +822,7 @@ class XDRApp: NSObject, NSApplicationDelegate {
             popover.contentViewController = controlsController
             statusPopover = popover
         }
-        refreshScreenshotPermission()
+        refreshSystemState()
         updateControls()
     }
 
@@ -829,7 +831,7 @@ class XDRApp: NSObject, NSApplicationDelegate {
         if statusPopover.isShown {
             statusPopover.performClose(nil)
         } else {
-            refreshScreenshotPermission()
+            refreshSystemState()
             updateControls()
             statusPopover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
             NSApp.activate()
@@ -842,7 +844,12 @@ class XDRApp: NSObject, NSApplicationDelegate {
         }
     }
 
-    func refreshScreenshotPermission() {
+    func refreshSystemState() {
+        if isRunningAsApp, #available(macOS 13.0, *) {
+            loginItemEnabled = SMAppService.mainApp.status == .enabled
+        } else {
+            loginItemEnabled = nil
+        }
         screenshotPermissionGranted = screenshotMonitoringAllowed
         if screenshotPermissionGranted, !screenshotMonitorHasPermission, screenshotMonitor != nil {
             // Access was granted while running: reinstall so key events arrive.
@@ -850,20 +857,16 @@ class XDRApp: NSObject, NSApplicationDelegate {
         }
     }
 
-    func updateControls() {
+    /// Pass `screens` when the caller already scanned them, as slider drags do
+    /// on every tick.
+    func updateControls(screens knownScreens: [XDRScreenInfo]? = nil) {
         guard controlsController != nil else { return }
-        let screens = xdrScreens()
-        let loginEnabled: Bool?
-        if isRunningAsApp, #available(macOS 13.0, *) {
-            loginEnabled = SMAppService.mainApp.status == .enabled
-        } else {
-            loginEnabled = nil
-        }
+        let screens = knownScreens ?? xdrScreens()
         controlsController.update(
             isEnabled: shouldBeActive,
             isActive: isActive,
             displays: displayControlModels(for: screens),
-            loginEnabled: loginEnabled,
+            loginEnabled: loginItemEnabled,
             showsScreenshotPermissionWarning: !screenshotPermissionGranted
         )
         statusItem.button?.appearsDisabled = screens.isEmpty
@@ -1078,7 +1081,8 @@ class XDRApp: NSObject, NSApplicationDelegate {
     }
 
     func setBoostLevel(_ level: Double, for displayIdentifier: String) {
-        guard let screen = xdrScreens().first(where: {
+        let screens = xdrScreens()
+        guard let screen = screens.first(where: {
             $0.persistentIdentifier == displayIdentifier
         }) else { return }
 
@@ -1098,7 +1102,7 @@ class XDRApp: NSObject, NSApplicationDelegate {
                 )
                 view.draw()
             }
-            updateControls()
+            updateControls(screens: screens)
         } else {
             shouldBeActive = true
             activate()
@@ -1148,6 +1152,7 @@ class XDRApp: NSObject, NSApplicationDelegate {
             } catch {
                 fputs("Login item toggle failed: \(error)\n", stderr)
             }
+            refreshSystemState()
             updateControls()
         }
     }
@@ -1169,7 +1174,7 @@ extension XDRApp: NSStatusItemExpandedInterfaceDelegate {
             expandedInterfaceSession.cancel()
             return
         }
-        refreshScreenshotPermission()
+        refreshSystemState()
         updateControls()
         statusPanel.show(below: button)
         // Clicks in other apps end the session; mouse monitors need no
